@@ -1,7 +1,7 @@
 # database.py - MongoDB Database Management
 import motor.motor_asyncio
 from datetime import datetime
-from config import Config
+from config import config
 import logging
 
 logger = logging.getLogger(__name__)
