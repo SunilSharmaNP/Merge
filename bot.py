@@ -9,7 +9,7 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 from pyrogram.errors import FloodWait, UserNotParticipant
 
 # Import your existing modules (unchanged)
-from config import Config
+from config import config
 from database import db
 from helpers import *
 from downloader import download_from_url, download_from_tg
