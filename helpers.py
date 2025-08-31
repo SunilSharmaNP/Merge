@@ -2,7 +2,7 @@
 from pyrogram import Client
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.errors import UserNotParticipant, ChatAdminRequired, ChannelPrivate
-from config import Config
+from config import config
 from database import db
 import logging
 
