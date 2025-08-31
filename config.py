@@ -1,8 +1,9 @@
-# Enhanced Video Merger Bot - Professional Version with MongoDB Integration
-
-# config.py - Enhanced Configuration with MongoDB Support
+# config.py
 import os
-from os import environ
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file if it exists
+load_dotenv('config.env')
 
 class Config:
     # Telegram Bot Configuration
