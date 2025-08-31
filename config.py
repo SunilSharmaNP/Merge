@@ -1,10 +1,5 @@
-# config.py
 import os
-from dotenv import load_dotenv
-
-# Load environment variables from a .env file if it exists
-load_dotenv('config.env')
-
+from os import environ
 class Config:
     # Telegram Bot Configuration
     API_ID = int(environ.get("API_ID"))
