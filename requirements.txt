@@ -1,22 +1,13 @@
-# requirements_fixed.txt - Docker-compatible with build fixes
-
-# Core Dependencies (Stable versions)
-pyrogram==2.0.106          # ✅ Latest stable version
-tgcrypto>=1.2.5            # ✅ Cryptography acceleration 
-python-dotenv==1.0.0       # ✅ Environment variables
-
-# HTTP and Download Optimization 
-aiohttp>=3.9.5             # ✅ Security update - fixes CVE-2024-23334
-aiofiles==23.2.1           # ✅ Async file operations
-
-# FFmpeg Integration
-ffmpeg-python              # ✅ FFmpeg Python wrapper
-
-# HTTP Client (fallback)
-requests                   # ✅ Sync HTTP client
-
-# Performance Optimizations (Linux only - conditional)
-uvloop>=0.17.0; sys_platform != "win32"     # 🚀 2-4x faster asyncio (Linux/macOS)
-
-# Character Detection (Fixed alternative to cchardet)
-charset-normalizer>=3.0.0  # ✅ Better alternative to cchardet (pure Python, no gcc needed)
+pyrogram==2.0.106
+tgcrypto==1.2.5
+motor==3.3.2
+pymongo==4.6.0 
+aiohttp==3.9.1
+aiofiles==23.2.0
+ffmpeg-python
+requests
+uvloop>=0.17.0; sys_platform != "win32"
+charset-normalizer>=3.0.0
+asyncio-throttle==1.0.2
+python-dotenv==1.0.0
+colorlog==6.8.0
