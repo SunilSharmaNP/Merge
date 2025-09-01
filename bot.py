@@ -1,4 +1,3 @@
-# bot.py - Professional Video Merger Bot with MongoDB Integration
 import os
 import shutil
 import asyncio
@@ -63,17 +62,17 @@ def clear_user_data(user_id: int):
             os.remove(thumb)
         user_data.pop(user_id, None)
 
+# --- REPLACED WAITING FILTER WITH EXPLICIT ASYNC FUNCTIONS ---
+async def is_waiting_for_state(state: str, _, __, message: Message) -> bool:
+    """Helper filter to check the user's current state."""
+    if not message.from_user:
+        return False
+    return user_data.get(message.from_user.id, {}).get("state") == state
 
-def waiting_filter(state: str):
-    async def _filter(client: Client, update, *args) -> bool:
-        from pyrogram.types import Message
-        if not isinstance(update, Message):
-            return False
-        uid = update.from_user and update.from_user.id
-        if uid is None:
-            return False
-        return user_data.get(uid, {}).get("state") == state
-    return _filter
+# Define specific filters using the helper
+is_waiting_for_broadcast = filters.create(is_waiting_for_state, state="broadcast")
+is_waiting_for_thumbnail = filters.create(is_waiting_for_state, state="waiting_for_thumbnail")
+is_waiting_for_filename = filters.create(is_waiting_for_state, state="waiting_for_filename")
 
 # ===================== MAIN HANDLERS =====================
 
@@ -243,7 +242,7 @@ async def broadcast_command(client: Client, message: Message):
     user_data[uid] = {"state": "broadcast"}
     await message.reply_text("📢 Send the message you want to broadcast to all users.", quote=True)
 
-@app.on_message(filters.text & filters.private & filters.create(waiting_filter("broadcast")))
+@app.on_message(filters.text & filters.private & is_waiting_for_broadcast)
 async def handle_broadcast(client: Client, message: Message):
     uid = message.from_user.id
     if uid != config.OWNER_ID:
@@ -326,7 +325,7 @@ async def handle_broadcast(client: Client, message: Message):
 
 # ===================== FILE HANDLERS =====================
 
-@app.on_message(filters.photo & filters.private & filters.create(waiting_filter("waiting_for_thumbnail")))
+@app.on_message(filters.photo & filters.private & is_waiting_for_thumbnail)
 async def thumbnail_handler(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid]:
@@ -343,7 +342,7 @@ async def thumbnail_handler(client: Client, message: Message):
     user_data[uid].update({"custom_thumbnail": path, "state": "waiting_for_filename"})
     await status.edit_text("✅ Thumbnail saved! Now send the filename (without extension).")
 
-@app.on_message(filters.command("no_thumbnail") & filters.private & filters.create(waiting_filter("waiting_for_thumbnail")))
+@app.on_message(filters.command("no_thumbnail") & filters.private & is_waiting_for_thumbnail)
 async def no_thumbnail(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid]:
@@ -352,7 +351,7 @@ async def no_thumbnail(client: Client, message: Message):
     user_data[uid].update({"custom_thumbnail": None, "state": "waiting_for_filename"})
     await user_data[uid]["status_message"].edit_text("👍 Using default thumbnail. Send filename:")
 
-@app.on_message(filters.text & filters.private & filters.create(waiting_filter("waiting_for_filename")))
+@app.on_message(filters.text & filters.private & is_waiting_for_filename)
 async def filename_handler(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid]:
