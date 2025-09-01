@@ -65,9 +65,15 @@ def clear_user_data(user_id: int):
 
 
 def waiting_filter(state: str):
-    async def _filter(client: Client, update: Message, *args) -> bool:
-        return user_data.get(update.from_user.id, {}).get("state") == state
-    return _filter
+    async def _filter(client: Client, update, *args) -> bool:
+        from pyrogram.types import Message
+        if not isinstance(update, Message):
+            return False
+        uid = update.from_user and update.from_user.id
+        if uid is None:
+            return False
+        return user_data.get(uid, {}).get("state") == state
+     return _filter
 
 # ===================== MAIN HANDLERS =====================
 
