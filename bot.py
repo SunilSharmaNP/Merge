@@ -62,14 +62,13 @@ def clear_user_data(user_id: int):
             os.remove(thumb)
         user_data.pop(user_id, None)
 
-# --- REPLACED WAITING FILTER WITH EXPLICIT ASYNC FUNCTIONS ---
+# --- Define state-based filters ---
 async def is_waiting_for_state(state: str, _, __, message: Message) -> bool:
     """Helper filter to check the user's current state."""
     if not message.from_user:
         return False
     return user_data.get(message.from_user.id, {}).get("state") == state
 
-# Define specific filters using the helper
 is_waiting_for_broadcast = filters.create(is_waiting_for_state, state="broadcast")
 is_waiting_for_thumbnail = filters.create(is_waiting_for_state, state="waiting_for_thumbnail")
 is_waiting_for_filename = filters.create(is_waiting_for_state, state="waiting_for_filename")
@@ -86,11 +85,9 @@ async def start_handler(client: Client, message: Message):
     
     clear_user_data(user_id)
     
-    # Handle deep links
     usr_cmd = message.text.split("_")[-1] if "_" in message.text else "/start"
     
     if usr_cmd == "/start":
-        # Regular start command
         text = config.START_TEXT.format(bot_name=config.BOT_NAME, developer=config.DEVELOPER)
         
         if hasattr(config, 'START_PIC') and config.START_PIC:
@@ -104,10 +101,8 @@ async def start_handler(client: Client, message: Message):
             await message.reply_text(text, reply_markup=get_main_keyboard(), quote=True)
     
     else:
-        # Handle file/stream links (from your existing code)
         if "stream_" in message.text:
             try:
-                # This would need your file streaming logic
                 await message.reply_text("File streaming feature - implement your logic here")
             except Exception as e:
                 await message.reply_text("❌ File not found or expired.")
@@ -115,7 +110,6 @@ async def start_handler(client: Client, message: Message):
         
         elif "file_" in message.text:
             try:
-                # This would need your file download logic
                 await message.reply_text("File download feature - implement your logic here")
             except Exception as e:
                 await message.reply_text("❌ File not found or expired.")
@@ -251,7 +245,6 @@ async def handle_broadcast(client: Client, message: Message):
     user_data[uid]["state"] = None
     broadcast_message = message.text
     
-    # Generate broadcast ID
     while True:
         broadcast_id = ''.join([random.choice(string.ascii_letters) for i in range(3)])
         if broadcast_id not in broadcast_ids:
@@ -289,14 +282,12 @@ async def handle_broadcast(client: Client, message: Message):
                 fail += 1
                 await log_file.write(f"❌ {target_id}: {str(e)}\n")
             
-            # Update status every 50 users
             if i % 50 == 0:
                 try:
                     await status.edit_text(f"📡 Broadcasting...\n✅ Success: {success}\n❌ Failed: {fail}\n📊 Progress: {i}/{total_users}")
                 except:
                     pass
     
-    # Final result
     broadcast_ids.pop(broadcast_id, None)
     completed_in = datetime.timedelta(seconds=int(time.time() - start_time))
     
@@ -320,7 +311,6 @@ async def handle_broadcast(client: Client, message: Message):
     else:
         await status.edit_text(result_text)
     
-    # Log broadcast
     await db.log_broadcast(str(message.message_id), success, fail, total_users)
 
 # ===================== FILE HANDLERS =====================
@@ -334,7 +324,6 @@ async def thumbnail_handler(client: Client, message: Message):
     status = user_data[uid]["status_message"]
     await status.edit_text("🖼 Processing thumbnail...")
     
-    # Create user directory
     user_dir = os.path.join(config.DOWNLOAD_DIR, str(uid))
     os.makedirs(user_dir, exist_ok=True)
     
@@ -363,7 +352,6 @@ async def filename_handler(client: Client, message: Message):
     
     await status.edit_text(f"📁 Filename: `{name}.mkv`\n🚀 Starting upload...")
     
-    # Upload to telegram
     await upload_to_telegram(
         client,
         message.chat.id,
@@ -373,7 +361,6 @@ async def filename_handler(client: Client, message: Message):
         name,
     )
     
-    # Log merge activity
     await send_log_message(
         client, "merge_activity",
         f"📁 **File Merged & Uploaded**\n👤 User: {message.from_user.first_name} (`{uid}`)\n📎 File: `{name}.mkv`\n📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -383,30 +370,27 @@ async def filename_handler(client: Client, message: Message):
     clear_user_data(uid)
 
 @app.on_message(
-    (filters.video | (filters.text & ~filters.command([
-        "start","help","about","cancel","merge","no_thumbnail",
-        "stats","admin","broadcast","ban","unban"
-    ]))) & (filters.private | filters.group)
+    filters.video | (filters.text & ~filters.command([
+        "start", "help", "about", "cancel", "merge", "notg_thumbnail", "no_thumbnail",
+        "stats", "admin", "broadcast", "ban", "unban"
+    ]))
 )
 async def file_handler(client: Client, message: Message):
     uid = message.from_user.id
     cid = message.chat.id
     
-    # Authorization check
     if not await is_authorized_user(uid, cid):
-        if cid != uid:  # Group message
+        if cid != uid:
             return await message.reply_text("❌ This bot is not authorized in this chat.")
         if not await verify_user_complete(client, message):
             return
     
-    # Check user state
     if user_data.get(uid, {}).get("state"):
         return await message.reply_text("⏳ Please complete the current process or use /cancel.")
     
     await db.update_user_activity(uid)
     user_data.setdefault(uid, {"queue": []})
     
-    # Process item
     item = message if message.video else message.text
     if not message.video and not is_valid_url(item):
         return await message.reply_text("⚠️ Please send a valid HTTP/HTTPS link.")
@@ -442,11 +426,9 @@ async def callback_handler(client: Client, query: CallbackQuery):
     data = query.data
 
     try:
-        # Force subscribe callback
         if data == "check_subscription":
             if await is_user_member(client, uid, config.FORCE_SUB_CHANNEL):
                 await query.message.delete()
-                # Simulate /start
                 fake_msg = type("obj", (), {
                     "from_user": query.from_user,
                     "chat": query.message.chat,
@@ -462,7 +444,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
                     pass
             return
 
-        # Navigation callbacks
         if data == "back_to_start":
             text = config.START_TEXT.format(bot_name=config.BOT_NAME, developer=config.DEVELOPER)
             await query.message.edit_text(text, reply_markup=get_main_keyboard())
@@ -479,7 +460,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]])
             )
 
-        # Queue management
         elif data == "add_more":
             try:
                 await query.answer("📹 Send more videos or links!")
@@ -497,7 +477,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
             await query.message.edit_reply_markup(None)
             await start_merge_process(client, query.message, uid)
 
-        # Upload choices
         elif data == "upload_tg":
             if uid not in user_data or "merged_file" not in user_data[uid]:
                 try:
@@ -529,7 +508,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
             clear_user_data(uid)
 
-        # Admin callbacks
         elif data.startswith("admin_"):
             if uid not in config.ADMINS and uid != config.OWNER_ID:
                 try:
@@ -539,7 +517,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 return
             await handle_admin_callbacks(client, query, data)
 
-        # Safe answer
         try:
             await query.answer()
         except Exception:
@@ -552,7 +529,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
         except Exception:
             pass
 
-
 # ===================== HELPER FUNCTIONS =====================
 
 async def start_merge_process(client: Client, message: Message, uid: int):
@@ -561,7 +537,6 @@ async def start_merge_process(client: Client, message: Message, uid: int):
     user_data[uid]["status_message"] = status
     
     try:
-        # Download all files
         paths = []
         queue = user_data[uid]["queue"]
         
@@ -579,7 +554,6 @@ async def start_merge_process(client: Client, message: Message, uid: int):
             
             paths.append(path)
         
-        # Merge videos
         await status.edit_text("🔄 Merging videos...")
         start_time = datetime.utcnow()
         merged = await merge_videos(paths, uid, status)
@@ -587,7 +561,6 @@ async def start_merge_process(client: Client, message: Message, uid: int):
         if not merged:
             return clear_user_data(uid)
         
-        # Log merge
         merge_time = (datetime.utcnow() - start_time).total_seconds()
         file_size = os.path.getsize(merged) if os.path.exists(merged) else 0
         
@@ -596,7 +569,6 @@ async def start_merge_process(client: Client, message: Message, uid: int):
         
         user_data[uid]["merged_file"] = merged
         
-        # Show upload options
         await status.edit_text(
             "✅ **Merge Complete!**\n\nChoose upload destination:",
             reply_markup=get_upload_choice_keyboard()
