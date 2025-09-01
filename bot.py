@@ -334,28 +334,34 @@ async def thumbnail_handler(client: Client, message: Message):
         return await message.reply_text("❌ Session expired. Please start over.")
     
     status = user_data[uid]["status_message"]
-    await status.edit_text("🖼 Processing thumbnail...")
+    await status.edit_text("🖼️ Processing thumbnail...")
     
     user_dir = os.path.join(config.DOWNLOAD_DIR, str(uid))
     os.makedirs(user_dir, exist_ok=True)
     
-    path = await message.download(os.path.join(user_dir, "thumb.jpg"))
+    path = await message.download(file_name=os.path.join(user_dir, "custom_thumb.jpg"))
     user_data[uid].update({"custom_thumbnail": path, "state": "waiting_for_filename"})
-    await status.edit_text("✅ Thumbnail saved! Now send the filename (without extension).")
+    await status.edit_text(
+        "✅ **Thumbnail saved!**\n\n"
+        "Now, send me the **filename** (without extension) you want for the merged video."
+    )
 
 @app.on_message(filters.command("no_thumbnail") & filters.private & is_waiting_for_thumbnail)
-async def no_thumbnail(client: Client, message: Message):
+async def no_thumbnail_handler(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid]:
         return await message.reply_text("❌ Session expired. Please start over.")
     
     user_data[uid].update({"custom_thumbnail": None, "state": "waiting_for_filename"})
-    await user_data[uid]["status_message"].edit_text("👍 Using default thumbnail. Send filename:")
+    await user_data[uid]["status_message"].edit_text(
+        "👍 **Okay, I will generate a default thumbnail.**\n\n"
+        "Now, send me the **filename** (without extension) you want for the merged video."
+    )
 
 @app.on_message(filters.text & filters.private & is_waiting_for_filename)
 async def filename_handler(client: Client, message: Message):
     uid = message.from_user.id
-    if uid not in user_data or "status_message" not in user_data[uid]:
+    if uid not in user_data or "status_message" not in user_data[uid] or "merged_file" not in user_data[uid]:
         return await message.reply_text("❌ Session expired. Please start over.")
     
     status = user_data[uid]["status_message"]
@@ -380,6 +386,7 @@ async def filename_handler(client: Client, message: Message):
     )
     
     clear_user_data(uid)
+
 
 @app.on_message(
     filters.video | (filters.text & ~filters.command([
@@ -490,17 +497,19 @@ async def callback_handler(client: Client, query: CallbackQuery):
             await start_merge_process(client, query.message, uid)
 
         elif data == "upload_tg":
-            if uid not in user_data or "merged_file" not in user_data[uid]:
+            if user_id not in user_data or "merged_file" not in user_data[user_id]:
                 try:
                     await query.answer("❌ Session expired!", show_alert=True)
                 except Exception:
                     pass
                 return
 
-            user_data[uid]["state"] = "waiting_for_thumbnail"
+            user_data[user_id]["state"] = "waiting_for_thumbnail"
             await query.message.edit_text(
-                "🖼 **Thumbnail Selection**\n\nSend a photo for thumbnail or use /no_thumbnail for default."
+                "🖼 **Thumbnail Selection**\n\nPlease send me a **photo** to use as the thumbnail.\n\n"
+                "To skip and use a default thumbnail, send the command /no_thumbnail"
             )
+
 
         elif data == "upload_gofile":
             if uid not in user_data or "merged_file" not in user_data[uid]:
