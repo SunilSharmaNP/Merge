@@ -73,7 +73,7 @@ def waiting_filter(state: str):
         if uid is None:
             return False
         return user_data.get(uid, {}).get("state") == state
-     return _filter
+    return _filter
 
 # ===================== MAIN HANDLERS =====================
 
