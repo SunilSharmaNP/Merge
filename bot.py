@@ -241,7 +241,7 @@ async def broadcast_command(client: Client, message: Message):
     user_data[uid] = {"state": "broadcast"}
     await message.reply_text("📢 Send the message you want to broadcast to all users.", quote=True)
 
-@app.on_message(filters.text & filters.private & filters.create(is_waiting, state="broadcast"))
+@app.on_message(filters.text & filters.private & filters.create(waiting_filter("broadcast")))
 async def handle_broadcast(client: Client, message: Message):
     uid = message.from_user.id
     if uid != config.OWNER_ID:
@@ -324,7 +324,7 @@ async def handle_broadcast(client: Client, message: Message):
 
 # ===================== FILE HANDLERS =====================
 
-@app.on_message(filters.photo & filters.private & filters.create(is_waiting, state="waiting_for_thumbnail"))
+@app.on_message(filters.photo & filters.private & filters.create(waiting_filter("waiting_for_thumbnail")))
 async def thumbnail_handler(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid]:
@@ -341,7 +341,7 @@ async def thumbnail_handler(client: Client, message: Message):
     user_data[uid].update({"custom_thumbnail": path, "state": "waiting_for_filename"})
     await status.edit_text("✅ Thumbnail saved! Now send the filename (without extension).")
 
-@app.on_message(filters.command("no_thumbnail") & filters.private & filters.create(is_waiting, state="waiting_for_thumbnail"))
+@app.on_message(filters.command("no_thumbnail") & filters.private & filters.create(waiting_filter("waiting_for_thumbnail")))
 async def no_thumbnail(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid]:
@@ -350,7 +350,7 @@ async def no_thumbnail(client: Client, message: Message):
     user_data[uid].update({"custom_thumbnail": None, "state": "waiting_for_filename"})
     await user_data[uid]["status_message"].edit_text("👍 Using default thumbnail. Send filename:")
 
-@app.on_message(filters.text & filters.private & filters.create(is_waiting, state="waiting_for_filename"))
+@app.on_message(filters.text & filters.private & filters.create(waiting_filter("waiting_for_filename")))
 async def filename_handler(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid]:
@@ -439,92 +439,118 @@ async def merge_command(client: Client, message: Message):
 async def callback_handler(client: Client, query: CallbackQuery):
     uid = query.from_user.id
     data = query.data
-    
+
     try:
         # Force subscribe callback
         if data == "check_subscription":
             if await is_user_member(client, uid, config.FORCE_SUB_CHANNEL):
                 await query.message.delete()
-                # Simulate start command
-                fake_msg = type('obj', (object,), {
-                    'from_user': query.from_user,
-                    'chat': query.message.chat,
-                    'text': '/start',
-                    'reply_text': query.message.reply_text,
-                    'reply_photo': query.message.reply_photo if hasattr(query.message, 'reply_photo') else None
+                # Simulate /start
+                fake_msg = type("obj", (), {
+                    "from_user": query.from_user,
+                    "chat": query.message.chat,
+                    "text": "/start",
+                    "reply_text": query.message.reply_text,
+                    "reply_photo": getattr(query.message, "reply_photo", None)
                 })()
                 await start_handler(client, fake_msg)
             else:
-                await query.answer("❌ Please join the channel first!", show_alert=True)
+                try:
+                    await query.answer("❌ Please join the channel first!", show_alert=True)
+                except Exception:
+                    pass
             return
-        
+
         # Navigation callbacks
         if data == "back_to_start":
             text = config.START_TEXT.format(bot_name=config.BOT_NAME, developer=config.DEVELOPER)
             await query.message.edit_text(text, reply_markup=get_main_keyboard())
-        
+
         elif data == "help_menu":
             await query.message.edit_text(
                 get_help_text(),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]])
             )
-        
+
         elif data == "about_menu":
             await query.message.edit_text(
                 get_about_text(),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]])
             )
-        
+
         # Queue management
         elif data == "add_more":
-            await query.answer("📹 Send more videos or links!")
-        
+            try:
+                await query.answer("📹 Send more videos or links!")
+            except Exception:
+                pass
+
         elif data == "clear_queue":
             clear_user_data(uid)
             await query.message.edit_text(
                 "🗑 Queue cleared!",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="back_to_start")]])
             )
-        
+
         elif data == "start_merge":
             await query.message.edit_reply_markup(None)
             await start_merge_process(client, query.message, uid)
-        
+
         # Upload choices
         elif data == "upload_tg":
             if uid not in user_data or "merged_file" not in user_data[uid]:
-                return await query.answer("❌ Session expired!", show_alert=True)
-            
+                try:
+                    await query.answer("❌ Session expired!", show_alert=True)
+                except Exception:
+                    pass
+                return
+
             user_data[uid]["state"] = "waiting_for_thumbnail"
             await query.message.edit_text(
                 "🖼 **Thumbnail Selection**\n\nSend a photo for thumbnail or use /no_thumbnail for default."
             )
-        
+
         elif data == "upload_gofile":
             if uid not in user_data or "merged_file" not in user_data[uid]:
-                return await query.answer("❌ Session expired!", show_alert=True)
-            
+                try:
+                    await query.answer("❌ Session expired!", show_alert=True)
+                except Exception:
+                    pass
+                return
+
             status = await query.message.edit_text("🔗 Uploading to GoFile...")
             try:
                 uploader = GofileUploader()
                 link = await uploader.upload_file(user_data[uid]["merged_file"])
                 await status.edit_text(f"✅ **GoFile Upload Complete!**\n\n🔗 **Link:** {link}")
             except Exception as e:
-                await status.edit_text(f"❌ GoFile upload failed: {str(e)}")
-            
+                await status.edit_text(f"❌ GoFile upload failed: {e}")
+
             clear_user_data(uid)
-        
+
         # Admin callbacks
         elif data.startswith("admin_"):
             if uid not in config.ADMINS and uid != config.OWNER_ID:
-                return await query.answer("❌ Access denied!", show_alert=True)
+                try:
+                    await query.answer("❌ Access denied!", show_alert=True)
+                except Exception:
+                    pass
+                return
             await handle_admin_callbacks(client, query, data)
-        
-        await query.answer()
-        
+
+        # Safe answer
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
     except Exception as e:
         logger.error(f"Callback error: {e}")
-        await query.answer("❌ An error occurred!")
+        try:
+            await query.answer("❌ An error occurred!", show_alert=True)
+        except Exception:
+            pass
+
 
 # ===================== HELPER FUNCTIONS =====================
 
