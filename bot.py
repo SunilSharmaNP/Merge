@@ -63,13 +63,9 @@ def clear_user_data(user_id: int):
             os.remove(thumb)
         user_data.pop(user_id, None)
 
+
 def waiting_filter(state: str):
-    """
-    Returns a filter function that checks whether the given user's session
-    state matches the provided state string.
-    """
     async def _filter(client: Client, update: Message, *args) -> bool:
-        # update is the Message object here
         return user_data.get(update.from_user.id, {}).get("state") == state
     return _filter
 
