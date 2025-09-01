@@ -63,8 +63,15 @@ def clear_user_data(user_id: int):
             os.remove(thumb)
         user_data.pop(user_id, None)
 
-async def is_waiting(state: str, message: Message) -> bool:
-    return user_data.get(message.from_user.id, {}).get("state") == state
+def waiting_filter(state: str):
+    """
+    Returns a filter function that checks whether the given user's session
+    state matches the provided state string.
+    """
+    async def _filter(client: Client, message: Message) -> bool:
+        return user_data.get(message.from_user.id, {}).get("state") == state
+    return _filter
+    
 
 # ===================== MAIN HANDLERS =====================
 
