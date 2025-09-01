@@ -1,605 +1,598 @@
-# bot_enhanced.py - Professional Video Merger Bot with MongoDB Integration
-
+# bot.py - Professional Video Merger Bot with MongoDB Integration
 import os
 import shutil
 import asyncio
+import logging
+import math
+import time
+import string
+import random
+import aiofiles
+import datetime
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import FloodWait, UserNotParticipant
+from pyrogram.enums.parse_mode import ParseMode
 
-# Import your existing modules (unchanged)
 from config import config
 from database import db
-from helpers import *
+from helpers import (
+    force_subscribe_check,
+    is_user_member,
+    is_authorized_user,
+    send_log_message,
+    get_main_keyboard,
+    get_help_text,
+    get_about_text,
+    get_video_queue_keyboard,
+    get_upload_choice_keyboard,
+    get_admin_keyboard,
+    verify_user_complete,
+    is_user_banned_check,
+    format_file_size
+)
 from downloader import download_from_url, download_from_tg
-from merger import merge_videos  # Your existing merger.py (unchanged)
+from merger import merge_videos
 from uploader import GofileUploader, upload_to_telegram
 from utils import cleanup_files, is_valid_url
 
+# Initialize logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Initialize bot
 app = Client(
-    "new-video_merger_bot",
+    "video_merger_bot",
     api_id=config.API_ID,
     api_hash=config.API_HASH,
-    bot_token=config.BOT_TOKEN
+    bot_token=config.BOT_TOKEN,
 )
 
-# User data storage (in-memory for queue management)
-user_data = {}
+# In-memory session state
+user_data: dict[int, dict] = {}
+broadcast_ids = {}
 
 def clear_user_data(user_id: int):
-    """Clear user session data"""
+    """Clear all session data for a user."""
     if user_id in user_data:
-        user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
-        cleanup_files(user_download_dir)
-        
-        custom_thumb = user_data[user_id].get("custom_thumbnail")
-        if custom_thumb and os.path.exists(custom_thumb):
-            os.remove(custom_thumb)
-        
+        download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
+        cleanup_files(download_dir)
+        thumb = user_data[user_id].get("custom_thumbnail")
+        if thumb and os.path.exists(thumb):
+            os.remove(thumb)
         user_data.pop(user_id, None)
 
-# Filters for different states
-async def is_waiting_for_thumbnail(_, __, message: Message):
-    if not message.from_user:
-        return False
-    return user_data.get(message.from_user.id, {}).get("state") == "waiting_for_thumbnail"
+async def is_waiting(state: str, message: Message) -> bool:
+    return user_data.get(message.from_user.id, {}).get("state") == state
 
-async def is_waiting_for_filename(_, __, message: Message):
-    if not message.from_user:
-        return False
-    return user_data.get(message.from_user.id, {}).get("state") == "waiting_for_filename"
+# ===================== MAIN HANDLERS =====================
 
-async def is_waiting_for_broadcast(_, __, message: Message):
-    if not message.from_user:
-        return False
-    return user_data.get(message.from_user.id, {}).get("state") == "waiting_for_broadcast"
-
-# Start command with professional welcome
-@app.on_message(filters.command(["start"]) & filters.private)
+@app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
     
-    # Force subscribe check
-    if not await force_subscribe_check(client, message):
+    # Complete user verification
+    if not await verify_user_complete(client, message):
         return
     
-    # Clear any existing session
     clear_user_data(user_id)
     
-    # Add user to database
-    await db.add_user(
-        user_id=user_id,
-        username=message.from_user.username,
-        first_name=message.from_user.first_name
-    )
+    # Handle deep links
+    usr_cmd = message.text.split("_")[-1] if "_" in message.text else "/start"
     
-    # Send log to channel
-    await send_log_message(
-        client, "new_user", 
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        user_id
-    )
-    
-    # Create welcome message with thumbnail
-    welcome_text = config.START_TEXT.format(
-        bot_name=config.BOT_NAME,
-        developer=config.DEVELOPER
-    )
-    
-    # Create professional keyboard
-    keyboard = get_main_keyboard()
-    
-    # Send welcome message with thumbnail (you can add a welcome image)
-    await message.reply_text(
-        welcome_text,
-        reply_markup=keyboard,
-        quote=True
-    )
-
-# Help command
-@app.on_message(filters.command(["help"]) & filters.private)
-async def help_handler(client: Client, message: Message):
-    if not await force_subscribe_check(client, message):
-        return
+    if usr_cmd == "/start":
+        # Regular start command
+        text = config.START_TEXT.format(bot_name=config.BOT_NAME, developer=config.DEVELOPER)
         
+        if hasattr(config, 'START_PIC') and config.START_PIC:
+            await message.reply_photo(
+                photo=config.START_PIC,
+                caption=text,
+                reply_markup=get_main_keyboard(),
+                quote=True
+            )
+        else:
+            await message.reply_text(text, reply_markup=get_main_keyboard(), quote=True)
+    
+    else:
+        # Handle file/stream links (from your existing code)
+        if "stream_" in message.text:
+            try:
+                # This would need your file streaming logic
+                await message.reply_text("File streaming feature - implement your logic here")
+            except Exception as e:
+                await message.reply_text("❌ File not found or expired.")
+                logger.error(f"Stream error: {e}")
+        
+        elif "file_" in message.text:
+            try:
+                # This would need your file download logic
+                await message.reply_text("File download feature - implement your logic here")
+            except Exception as e:
+                await message.reply_text("❌ File not found or expired.")
+                logger.error(f"File error: {e}")
+
+@app.on_message(filters.command("help") & filters.private)
+async def help_handler(client: Client, message: Message):
+    if not await verify_user_complete(client, message):
+        return
+    
     await message.reply_text(
         get_help_text(),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Back to Home", callback_data="back_to_start")]
-        ]),
-        quote=True
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]]),
+        quote=True,
     )
 
-# Stats command (Admin only)
-@app.on_message(filters.command(["stats"]) & filters.private)
-async def stats_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    
-    if user_id not in config.ADMINS and user_id != config.OWNER_ID:
-        await message.reply_text("❌ You don't have permission to use this command!")
+@app.on_message(filters.command("about") & filters.private)
+async def about_handler(client: Client, message: Message):
+    if not await verify_user_complete(client, message):
         return
     
-    stats = await db.get_bot_stats()
-    if stats:
-        stats_text = f"""
-📊 **Bot Statistics**
+    await message.reply_text(
+        get_about_text(),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]]),
+        quote=True,
+    )
 
+@app.on_message(filters.command("stats") & filters.private)
+async def stats_handler(client: Client, message: Message):
+    uid = message.from_user.id
+    if uid not in config.ADMINS and uid != config.OWNER_ID:
+        return await message.reply_text("❌ Unauthorized.")
+    
+    stats = await db.get_bot_stats()
+    text = f"""
+📊 **Bot Statistics**
 👥 **Total Users:** `{stats['total_users']}`
 🎬 **Total Merges:** `{stats['total_merges']}`
 📈 **Today's Merges:** `{stats['today_merges']}`
 🤖 **Bot Status:** Active ✅
-
-💾 **Database Status:** Connected
+💾 **Database Status:** Connected ✅
 """
-        await message.reply_text(stats_text, quote=True)
-    else:
-        await message.reply_text("❌ Error fetching statistics!")
+    await message.reply_text(text, quote=True)
 
-# Cancel command
-@app.on_message(filters.command(["cancel"]))
+@app.on_message(filters.command("cancel") & filters.private)
 async def cancel_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    clear_user_data(user_id)
-    
+    uid = message.from_user.id
+    clear_user_data(uid)
     await message.reply_text(
-        "✅ **Operation Cancelled**\n\nYour queue has been cleared. Use /start to begin again.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Go Home", callback_data="back_to_start")]
-        ]),
-        quote=True
+        "✅ Operation cancelled. Queue cleared.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="back_to_start")]]),
+        quote=True,
     )
 
-# Admin panel command
-@app.on_message(filters.command(["admin"]) & filters.private)
+# ===================== ADMIN HANDLERS =====================
+
+@app.on_message(filters.command("admin") & filters.private)
 async def admin_panel(client: Client, message: Message):
-    user_id = message.from_user.id
-    
-    if user_id != config.OWNER_ID and user_id not in config.ADMINS:
-        await message.reply_text("❌ You don't have admin access!")
-        return
+    uid = message.from_user.id
+    if uid not in config.ADMINS and uid != config.OWNER_ID:
+        return await message.reply_text("❌ Unauthorized.")
     
     admin_text = f"""
 🔧 **Admin Panel**
-
 Welcome to the admin dashboard, {message.from_user.first_name}!
-
 Use the buttons below to manage the bot:
 """
-    
-    await message.reply_text(
-        admin_text,
-        reply_markup=get_admin_keyboard(),
-        quote=True
-    )
+    await message.reply_text(admin_text, reply_markup=get_admin_keyboard(), quote=True)
 
-# Broadcast command (Owner only)
-@app.on_message(filters.command(["broadcast"]) & filters.private)
+@app.on_message(filters.command("ban") & filters.private)
+async def ban_user_handler(client: Client, message: Message):
+    uid = message.from_user.id
+    if uid != config.OWNER_ID and uid not in config.ADMINS:
+        return await message.reply_text("❌ Unauthorized.")
+    
+    try:
+        target_id = int(message.text.split(" ", 1)[1])
+    except (IndexError, ValueError):
+        return await message.reply_text("❌ Usage: `/ban <user_id>`")
+    
+    if await db.is_user_banned(target_id):
+        return await message.reply_text(f"User `{target_id}` is already banned.")
+    
+    success = await db.ban_user(target_id, True)
+    if success:
+        try:
+            await client.send_message(target_id, "🚫 You have been banned from using this bot.")
+        except:
+            pass
+        await message.reply_text(f"✅ User `{target_id}` has been banned.")
+    else:
+        await message.reply_text("❌ Failed to ban user.")
+
+@app.on_message(filters.command("unban") & filters.private)
+async def unban_user_handler(client: Client, message: Message):
+    uid = message.from_user.id
+    if uid != config.OWNER_ID and uid not in config.ADMINS:
+        return await message.reply_text("❌ Unauthorized.")
+    
+    try:
+        target_id = int(message.text.split(" ", 1)[1])
+    except (IndexError, ValueError):
+        return await message.reply_text("❌ Usage: `/unban <user_id>`")
+    
+    if not await db.is_user_banned(target_id):
+        return await message.reply_text(f"User `{target_id}` is not banned.")
+    
+    success = await db.ban_user(target_id, False)
+    if success:
+        try:
+            await client.send_message(target_id, "✅ You have been unbanned. You can now use the bot.")
+        except:
+            pass
+        await message.reply_text(f"✅ User `{target_id}` has been unbanned.")
+    else:
+        await message.reply_text("❌ Failed to unban user.")
+
+@app.on_message(filters.command("broadcast") & filters.private)
 async def broadcast_command(client: Client, message: Message):
-    user_id = message.from_user.id
+    uid = message.from_user.id
+    if uid != config.OWNER_ID:
+        return await message.reply_text("❌ Only owner can broadcast.")
     
-    if user_id != config.OWNER_ID:
-        await message.reply_text("❌ Only the owner can use this command!")
-        return
-    
-    user_data[user_id] = {"state": "waiting_for_broadcast"}
-    
-    await message.reply_text(
-        "📢 **Broadcast Mode**\n\nSend me the message you want to broadcast to all users.\n\nUse /cancel to abort.",
-        quote=True
-    )
+    user_data[uid] = {"state": "broadcast"}
+    await message.reply_text("📢 Send the message you want to broadcast to all users.", quote=True)
 
-# Handle broadcast message
-@app.on_message(filters.text & filters.private & filters.create(is_waiting_for_broadcast))
+@app.on_message(filters.text & filters.private & filters.create(is_waiting, state="broadcast"))
 async def handle_broadcast(client: Client, message: Message):
-    user_id = message.from_user.id
-    
-    if user_id != config.OWNER_ID:
+    uid = message.from_user.id
+    if uid != config.OWNER_ID:
         return
     
-    user_data[user_id]["state"] = None
+    user_data[uid]["state"] = None
     broadcast_message = message.text
     
-    status_msg = await message.reply_text("📡 **Starting broadcast...**")
+    # Generate broadcast ID
+    while True:
+        broadcast_id = ''.join([random.choice(string.ascii_letters) for i in range(3)])
+        if broadcast_id not in broadcast_ids:
+            break
     
+    status = await message.reply_text("📡 Starting broadcast...")
     users = await db.get_all_users()
-    success = 0
-    failed = 0
     
-    for target_user_id in users:
-        try:
-            await client.send_message(target_user_id, broadcast_message)
-            success += 1
-            await asyncio.sleep(0.1)  # Rate limiting
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
+    start_time = time.time()
+    total_users = len(users)
+    success = fail = 0
+    
+    broadcast_ids[broadcast_id] = {
+        "total": total_users,
+        "success": 0,
+        "failed": 0
+    }
+    
+    async with aiofiles.open('broadcast.txt', 'w') as log_file:
+        for i, target_id in enumerate(users, 1):
             try:
-                await client.send_message(target_user_id, broadcast_message)
+                await client.send_message(target_id, broadcast_message)
                 success += 1
-            except:
-                failed += 1
-        except:
-            failed += 1
-        
-        # Update status every 50 users
-        if (success + failed) % 50 == 0:
-            await status_msg.edit_text(
-                f"📡 **Broadcasting...**\n\n"
-                f"✅ Successful: {success}\n"
-                f"❌ Failed: {failed}\n"
-                f"📊 Progress: {success + failed}/{len(users)}"
-            )
+                await log_file.write(f"✅ {target_id}\n")
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+                try:
+                    await client.send_message(target_id, broadcast_message)
+                    success += 1
+                    await log_file.write(f"✅ {target_id} (after FloodWait)\n")
+                except Exception as e:
+                    fail += 1
+                    await log_file.write(f"❌ {target_id}: {str(e)}\n")
+            except Exception as e:
+                fail += 1
+                await log_file.write(f"❌ {target_id}: {str(e)}\n")
+            
+            # Update status every 50 users
+            if i % 50 == 0:
+                try:
+                    await status.edit_text(f"📡 Broadcasting...\n✅ Success: {success}\n❌ Failed: {fail}\n📊 Progress: {i}/{total_users}")
+                except:
+                    pass
     
-    await status_msg.edit_text(
-        f"✅ **Broadcast Completed!**\n\n"
-        f"📊 **Results:**\n"
-        f"✅ Successful: {success}\n"
-        f"❌ Failed: {failed}\n"
-        f"👥 Total Users: {len(users)}"
-    )
+    # Final result
+    broadcast_ids.pop(broadcast_id, None)
+    completed_in = datetime.timedelta(seconds=int(time.time() - start_time))
+    
+    result_text = f"""
+✅ **Broadcast Completed!**
 
-# Thumbnail handler
-@app.on_message(filters.photo & filters.private & filters.create(is_waiting_for_thumbnail))
+📊 **Results:**
+• Total Users: {total_users}
+• Successful: {success}
+• Failed: {fail}
+• Time Taken: {completed_in}
+"""
+    
+    if fail > 0:
+        await message.reply_document(
+            document='broadcast.txt',
+            caption=result_text,
+            quote=True
+        )
+        os.remove('broadcast.txt')
+    else:
+        await status.edit_text(result_text)
+    
+    # Log broadcast
+    await db.log_broadcast(str(message.message_id), success, fail, total_users)
+
+# ===================== FILE HANDLERS =====================
+
+@app.on_message(filters.photo & filters.private & filters.create(is_waiting, state="waiting_for_thumbnail"))
 async def thumbnail_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    status_msg = user_data[user_id]["status_message"]
+    uid = message.from_user.id
+    if uid not in user_data or "status_message" not in user_data[uid]:
+        return await message.reply_text("❌ Session expired. Please start over.")
     
-    await status_msg.edit_text("🖼️ **Processing thumbnail...**")
+    status = user_data[uid]["status_message"]
+    await status.edit_text("🖼 Processing thumbnail...")
     
-    thumb_path = await message.download(
-        file_name=os.path.join(config.DOWNLOAD_DIR, str(user_id), "custom_thumb.jpg")
-    )
+    # Create user directory
+    user_dir = os.path.join(config.DOWNLOAD_DIR, str(uid))
+    os.makedirs(user_dir, exist_ok=True)
     
-    user_data[user_id]["custom_thumbnail"] = thumb_path
-    user_data[user_id]["state"] = "waiting_for_filename"
-    
-    await status_msg.edit_text(
-        "✅ **Thumbnail Saved!**\n\n"
-        "Now send me the **filename** (without extension) for your merged video."
-    )
+    path = await message.download(os.path.join(user_dir, "thumb.jpg"))
+    user_data[uid].update({"custom_thumbnail": path, "state": "waiting_for_filename"})
+    await status.edit_text("✅ Thumbnail saved! Now send the filename (without extension).")
 
-# No thumbnail handler
-@app.on_message(filters.command("notg_thumbnail") & filters.private & filters.create(is_waiting_for_thumbnail))
-async def no_thumbnail_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    user_data[user_id]["custom_thumbnail"] = None
-    user_data[user_id]["state"] = "waiting_for_filename"
+@app.on_message(filters.command("no_thumbnail") & filters.private & filters.create(is_waiting, state="waiting_for_thumbnail"))
+async def no_thumbnail(client: Client, message: Message):
+    uid = message.from_user.id
+    if uid not in user_data or "status_message" not in user_data[uid]:
+        return await message.reply_text("❌ Session expired. Please start over.")
     
-    await user_data[user_id]["status_message"].edit_text(
-        "👍 **Using Default Thumbnail**\n\n"
-        "Now send me the **filename** (without extension) for your merged video."
-    )
+    user_data[uid].update({"custom_thumbnail": None, "state": "waiting_for_filename"})
+    await user_data[uid]["status_message"].edit_text("👍 Using default thumbnail. Send filename:")
 
-# Filename handler
-@app.on_message(filters.text & filters.private & filters.create(is_waiting_for_filename))
+@app.on_message(filters.text & filters.private & filters.create(is_waiting, state="waiting_for_filename"))
 async def filename_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    status_msg = user_data[user_id]["status_message"]
-    filename = os.path.basename(message.text.strip())
+    uid = message.from_user.id
+    if uid not in user_data or "status_message" not in user_data[uid]:
+        return await message.reply_text("❌ Session expired. Please start over.")
     
-    user_data[user_id]["custom_filename"] = filename
-    user_data[user_id]["state"] = None
+    status = user_data[uid]["status_message"]
+    name = os.path.basename(message.text.strip())
+    user_data[uid].update({"custom_filename": name, "state": None})
     
-    await status_msg.edit_text(
-        f"✅ **Filename Set:** `{filename}.mkv`\n\n🚀 **Starting upload to Telegram...**"
-    )
+    await status.edit_text(f"📁 Filename: `{name}.mkv`\n🚀 Starting upload...")
     
-    # Start upload process
-    file_path = user_data[user_id]["merged_file"]
-    thumb_path = user_data[user_id].get("custom_thumbnail")
-    
+    # Upload to telegram
     await upload_to_telegram(
-        client=client,
-        chat_id=message.chat.id,
-        file_path=file_path,
-        status_message=status_msg,
-        custom_thumbnail=thumb_path,
-        custom_filename=filename
+        client,
+        message.chat.id,
+        user_data[uid]["merged_file"],
+        status,
+        user_data[uid].get("custom_thumbnail"),
+        name,
     )
     
     # Log merge activity
     await send_log_message(
         client, "merge_activity",
-        f"📁 **File Merged & Uploaded**\n\n"
-        f"👤 **User:** {message.from_user.first_name} (`{user_id}`)\n"
-        f"📎 **File:** `{filename}.mkv`\n"
-        f"📅 **Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"📁 **File Merged & Uploaded**\n👤 User: {message.from_user.first_name} (`{uid}`)\n📎 File: `{name}.mkv`\n📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        uid
     )
     
-    clear_user_data(user_id)
+    clear_user_data(uid)
 
-# File handler - Videos and URLs
-@app.on_message((filters.video | (filters.text & ~filters.command(["start", "help", "cancel", "merge", "notg_thumbnail", "stats", "admin", "broadcast"]))) & (filters.private | filters.group))
+@app.on_message(
+    (filters.video | (filters.text & ~filters.command([
+        "start","help","about","cancel","merge","no_thumbnail",
+        "stats","admin","broadcast","ban","unban"
+    ]))) & (filters.private | filters.group)
+)
 async def file_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    chat_id = message.chat.id
+    uid = message.from_user.id
+    cid = message.chat.id
     
     # Authorization check
-    if not await is_authorized_user(user_id, chat_id):
-        if chat_id != user_id:  # Group message
-            await message.reply_text(
-                "❌ **Unauthorized Chat**\n\nThis bot is only available in authorized chats. Contact the owner to get access.",
-                quote=True
-            )
-        return
-    
-    # Force subscribe check for private chats
-    if chat_id == user_id:
-        if not await force_subscribe_check(client, message):
+    if not await is_authorized_user(uid, cid):
+        if cid != uid:  # Group message
+            return await message.reply_text("❌ This bot is not authorized in this chat.")
+        if not await verify_user_complete(client, message):
             return
     
-    # Check if user is in a special state
-    if user_data.get(user_id, {}).get("state"):
-        await message.reply_text(
-            "⏳ **Please complete the current process first**\n\nOr use /cancel to start over.",
-            quote=True
-        )
-        return
+    # Check user state
+    if user_data.get(uid, {}).get("state"):
+        return await message.reply_text("⏳ Please complete the current process or use /cancel.")
     
-    # Update user activity
-    await db.update_user_activity(user_id)
+    await db.update_user_activity(uid)
+    user_data.setdefault(uid, {"queue": []})
     
-    # Initialize user data if needed
-    if user_id not in user_data:
-        user_data[user_id] = {"queue": []}
-    
-    # Process the item
+    # Process item
     item = message if message.video else message.text
+    if not message.video and not is_valid_url(item):
+        return await message.reply_text("⚠️ Please send a valid HTTP/HTTPS link.")
+    
+    user_data[uid]["queue"].append(item)
+    count = len(user_data[uid]["queue"])
+    
     item_type = "Video" if message.video else "Link"
+    response_text = f"✅ **{item_type} Added to Queue!**\n📊 Queue: {count} item(s)"
     
-    # Validate URL
-    if item_type == "Link" and not is_valid_url(item):
-        await message.reply_text(
-            "⚠️ **Invalid Link**\n\nPlease send a valid direct download link (HTTP/HTTPS).",
-            quote=True
-        )
-        return
-    
-    # Add to queue
-    user_data[user_id].setdefault("queue", []).append(item)
-    queue_count = len(user_data[user_id]["queue"])
-    
-    # Create response message
-    response_text = f"✅ **{item_type} Added to Queue!**\n\n📊 **Queue Status:** {queue_count} item(s)"
-    
-    # Get appropriate keyboard
-    keyboard = get_video_queue_keyboard(queue_count)
-    
-    await message.reply_text(
-        response_text,
-        reply_markup=keyboard,
-        quote=True
-    )
+    keyboard = get_video_queue_keyboard(count)
+    await message.reply_text(response_text, reply_markup=keyboard, quote=True)
 
-# Merge command (for compatibility)
-@app.on_message(filters.command(["merge"]) & (filters.private | filters.group))
+@app.on_message(filters.command("merge") & (filters.private | filters.group))
 async def merge_command(client: Client, message: Message):
-    user_id = message.from_user.id
-    chat_id = message.chat.id
+    uid = message.from_user.id
+    cid = message.chat.id
     
-    # Authorization check
-    if not await is_authorized_user(user_id, chat_id):
-        await message.reply_text("❌ **Access Denied**\n\nYou don't have permission to use this bot here.")
-        return
+    if not await is_authorized_user(uid, cid):
+        return await message.reply_text("❌ Unauthorized.")
     
-    # Check queue
-    if user_id not in user_data or not user_data[user_id].get("queue"):
-        await message.reply_text(
-            "📭 **Empty Queue**\n\nPlease add videos to your queue first!",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📚 How to Use", callback_data="help_menu")]
-            ]),
-            quote=True
-        )
-        return
+    queue = user_data.get(uid, {}).get("queue", [])
+    if len(queue) < 2:
+        return await message.reply_text("⚠️ You need at least 2 videos to merge.")
     
-    if len(user_data[user_id]["queue"]) < 2:
-        await message.reply_text(
-            "⚠️ **Need More Videos**\n\nYou need at least 2 videos to merge.",
-            quote=True
-        )
-        return
-    
-    # Start merge process directly
-    await start_merge_process(client, message, user_id)
+    await start_merge_process(client, message, uid)
 
-# Callback query handler
+# ===================== CALLBACK HANDLERS =====================
+
 @app.on_callback_query()
 async def callback_handler(client: Client, query: CallbackQuery):
-    user_id = query.from_user.id
+    uid = query.from_user.id
     data = query.data
     
     try:
-        # Force subscribe callbacks
+        # Force subscribe callback
         if data == "check_subscription":
-            if await is_user_member(client, user_id, config.FORCE_SUB_CHANNEL):
+            if await is_user_member(client, uid, config.FORCE_SUB_CHANNEL):
                 await query.message.delete()
-                # Re-send start message
-                await start_handler(client, query.message)
+                # Simulate start command
+                fake_msg = type('obj', (object,), {
+                    'from_user': query.from_user,
+                    'chat': query.message.chat,
+                    'text': '/start',
+                    'reply_text': query.message.reply_text,
+                    'reply_photo': query.message.reply_photo if hasattr(query.message, 'reply_photo') else None
+                })()
+                await start_handler(client, fake_msg)
             else:
-                await query.answer("❌ You haven't joined the channel yet!", show_alert=True)
+                await query.answer("❌ Please join the channel first!", show_alert=True)
             return
         
-        # Main menu callbacks
+        # Navigation callbacks
         if data == "back_to_start":
-            await query.message.edit_text(
-                config.START_TEXT.format(
-                    bot_name=config.BOT_NAME,
-                    developer=config.DEVELOPER
-                ),
-                reply_markup=get_main_keyboard()
-            )
+            text = config.START_TEXT.format(bot_name=config.BOT_NAME, developer=config.DEVELOPER)
+            await query.message.edit_text(text, reply_markup=get_main_keyboard())
         
         elif data == "help_menu":
             await query.message.edit_text(
                 get_help_text(),
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]
-                ])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]])
             )
         
         elif data == "about_menu":
             await query.message.edit_text(
                 get_about_text(),
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]
-                ])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]])
             )
         
-        elif data == "home_menu":
-            await query.answer("🏠 You're already at home!", show_alert=False)
-        
-        # Queue management callbacks
+        # Queue management
         elif data == "add_more":
-            await query.answer("📹 Send me more videos or links!", show_alert=False)
+            await query.answer("📹 Send more videos or links!")
         
         elif data == "clear_queue":
-            clear_user_data(user_id)
+            clear_user_data(uid)
             await query.message.edit_text(
-                "🗑️ **Queue Cleared**\n\nAll videos have been removed from your queue.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Back to Home", callback_data="back_to_start")]
-                ])
+                "🗑 Queue cleared!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="back_to_start")]])
             )
         
         elif data == "start_merge":
             await query.message.edit_reply_markup(None)
-            await start_merge_process(client, query.message, user_id)
+            await start_merge_process(client, query.message, uid)
         
-        # Upload choice callbacks
+        # Upload choices
         elif data == "upload_tg":
-            if user_id not in user_data or not user_data[user_id].get("merged_file"):
-                await query.answer("❌ Session expired! Please start over.", show_alert=True)
-                return
+            if uid not in user_data or "merged_file" not in user_data[uid]:
+                return await query.answer("❌ Session expired!", show_alert=True)
             
-            user_data[user_id]["state"] = "waiting_for_thumbnail"
+            user_data[uid]["state"] = "waiting_for_thumbnail"
             await query.message.edit_text(
-                "🖼️ **Thumbnail Selection**\n\n"
-                "Send me a **photo** to use as thumbnail for your video.\n\n"
-                "Or send /notg_thumbnail to use a default thumbnail."
+                "🖼 **Thumbnail Selection**\n\nSend a photo for thumbnail or use /no_thumbnail for default."
             )
         
         elif data == "upload_gofile":
-            if user_id not in user_data or not user_data[user_id].get("merged_file"):
-                await query.answer("❌ Session expired! Please start over.", show_alert=True)
-                return
+            if uid not in user_data or "merged_file" not in user_data[uid]:
+                return await query.answer("❌ Session expired!", show_alert=True)
             
-            status_msg = await query.message.edit_text("🔗 **Uploading to GoFile.io...**")
-            
+            status = await query.message.edit_text("🔗 Uploading to GoFile...")
             try:
                 uploader = GofileUploader()
-                link = await uploader.upload_file(user_data[user_id]["merged_file"])
-                
-                await status_msg.edit_text(
-                    f"✅ **GoFile Upload Complete!**\n\n"
-                    f"🔗 **Download Link:** {link}\n\n"
-                    f"💡 **Note:** Links expire after 10 days of inactivity."
-                )
+                link = await uploader.upload_file(user_data[uid]["merged_file"])
+                await status.edit_text(f"✅ **GoFile Upload Complete!**\n\n🔗 **Link:** {link}")
             except Exception as e:
-                await status_msg.edit_text(f"❌ **GoFile Upload Failed!**\n\nError: `{str(e)}`")
+                await status.edit_text(f"❌ GoFile upload failed: {str(e)}")
             
-            clear_user_data(user_id)
+            clear_user_data(uid)
         
         # Admin callbacks
         elif data.startswith("admin_"):
-            if user_id not in config.ADMINS and user_id != config.OWNER_ID:
-                await query.answer("❌ Access denied!", show_alert=True)
-                return
-            
+            if uid not in config.ADMINS and uid != config.OWNER_ID:
+                return await query.answer("❌ Access denied!", show_alert=True)
             await handle_admin_callbacks(client, query, data)
         
         await query.answer()
         
     except Exception as e:
-        logger.error(f"Error in callback handler: {e}")
-        await query.answer("❌ An error occurred!", show_alert=True)
+        logger.error(f"Callback error: {e}")
+        await query.answer("❌ An error occurred!")
 
-async def start_merge_process(client: Client, message: Message, user_id: int):
-    """Start the merge process"""
+# ===================== HELPER FUNCTIONS =====================
+
+async def start_merge_process(client: Client, message: Message, uid: int):
+    """Start the video merge process"""
+    status = await message.reply_text("🚀 Starting merge process...")
+    user_data[uid]["status_message"] = status
+    
     try:
-        status_msg = await message.reply_text("🚀 **Starting merge process...**")
-        user_data[user_id]["status_message"] = status_msg
+        # Download all files
+        paths = []
+        queue = user_data[uid]["queue"]
         
-        # Download files
-        video_paths = []
-        queue = user_data[user_id]["queue"]
-        
-        for i, item in enumerate(queue):
-            await status_msg.edit_text(f"📥 **Downloading item {i+1} of {len(queue)}...**")
+        for i, item in enumerate(queue, 1):
+            await status.edit_text(f"📥 Downloading {i}/{len(queue)}...")
             
             if isinstance(item, str):
-                file_path = await download_from_url(item, user_id, status_msg)
+                path = await download_from_url(item, uid, status)
             else:
-                file_path = await download_from_tg(item, user_id, status_msg)
+                path = await download_from_tg(item, uid, status)
             
-            if not file_path:
-                await status_msg.edit_text("❌ **Download failed!** Cancelling operation.")
-                clear_user_data(user_id)
-                return
+            if not path:
+                await status.edit_text("❌ Download failed!")
+                return clear_user_data(uid)
             
-            video_paths.append(file_path)
+            paths.append(path)
         
         # Merge videos
-        start_time = datetime.now()
-        merged_path = await merge_videos(video_paths, user_id, status_msg)
-        merge_time = (datetime.now() - start_time).total_seconds()
+        await status.edit_text("🔄 Merging videos...")
+        start_time = datetime.utcnow()
+        merged = await merge_videos(paths, uid, status)
         
-        if not merged_path:
-            clear_user_data(user_id)
-            return
+        if not merged:
+            return clear_user_data(uid)
         
-        user_data[user_id]["merged_file"] = merged_path
+        # Log merge
+        merge_time = (datetime.utcnow() - start_time).total_seconds()
+        file_size = os.path.getsize(merged) if os.path.exists(merged) else 0
         
-        # Log merge activity
-        file_size = os.path.getsize(merged_path) if os.path.exists(merged_path) else 0
-        await db.log_merge(user_id, len(video_paths), file_size, merge_time)
-        await db.increment_merge_count(user_id)
+        await db.log_merge(uid, len(paths), file_size, merge_time)
+        await db.increment_merge_count(uid)
+        
+        user_data[uid]["merged_file"] = merged
         
         # Show upload options
-        await status_msg.edit_text(
-            "✅ **Merge Completed Successfully!**\n\n"
-            "Choose your upload destination:",
+        await status.edit_text(
+            "✅ **Merge Complete!**\n\nChoose upload destination:",
             reply_markup=get_upload_choice_keyboard()
         )
         
     except Exception as e:
-        logger.error(f"Error in merge process: {e}")
-        await status_msg.edit_text(f"❌ **Merge failed!** Error: {str(e)}")
-        clear_user_data(user_id)
+        logger.error(f"Merge error: {e}")
+        await status.edit_text(f"❌ Merge failed: {str(e)}")
+        clear_user_data(uid)
 
 async def handle_admin_callbacks(client: Client, query: CallbackQuery, data: str):
     """Handle admin panel callbacks"""
     if data == "admin_stats":
         stats = await db.get_bot_stats()
-        if stats:
-            stats_text = f"""
+        text = f"""
 📊 **Detailed Bot Statistics**
 
-👥 **Users:**
-├ Total Users: `{stats['total_users']}`
-├ Active Today: `{stats.get('active_today', 'N/A')}`
-└ Banned Users: `{stats.get('banned_users', 'N/A')}`
-
-🎬 **Merges:**
-├ Total Merges: `{stats['total_merges']}`
-├ Today's Merges: `{stats['today_merges']}`
-└ Average per Day: `{stats.get('avg_daily', 'N/A')}`
-
-💾 **System:**
-├ Database: Connected ✅
-├ Storage: Available ✅
-└ Bot Status: Online 🟢
+👥 **Users:** {stats['total_users']}
+🎬 **Total Merges:** {stats['total_merges']}
+📈 **Today's Merges:** {stats['today_merges']}
+💾 **Database:** Connected ✅
+🤖 **Status:** Online 🟢
 """
-            await query.message.edit_text(
-                stats_text,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Refresh", callback_data="admin_stats")],
-                    [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
-                ])
-            )
-        else:
-            await query.answer("❌ Error fetching stats!", show_alert=True)
+        await query.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Refresh", callback_data="admin_stats")],
+                [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
+            ])
+        )
     
     elif data == "admin_back":
         await query.message.edit_text(
@@ -607,10 +600,12 @@ async def handle_admin_callbacks(client: Client, query: CallbackQuery, data: str
             reply_markup=get_admin_keyboard()
         )
 
+# ===================== STARTUP =====================
+
 if __name__ == "__main__":
     print(f"🚀 {config.BOT_NAME} is starting...")
     print(f"👤 Owner: {config.DEVELOPER}")
-    print(f"📊 MongoDB: {'Enabled' if config.MONGO_URI else 'Disabled'}")
-    print(f"🔔 Force Subscribe: {'Enabled' if config.FORCE_SUB_CHANNEL else 'Disabled'}")
+    print(f"📊 MongoDB: {'Enabled' if hasattr(config, 'MONGO_URI') and config.MONGO_URI else 'Disabled'}")
+    print(f"🔔 Force Subscribe: {'Enabled' if hasattr(config, 'FORCE_SUB_CHANNEL') and config.FORCE_SUB_CHANNEL else 'Disabled'}")
     
     app.run()
