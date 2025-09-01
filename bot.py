@@ -63,11 +63,23 @@ def clear_user_data(user_id: int):
         user_data.pop(user_id, None)
 
 # --- Define state-based filters ---
-async def is_waiting_for_state(state: str, _, __, message: Message) -> bool:
-    """Helper filter to check the user's current state."""
-    if not message.from_user:
+# This is the corrected function.
+async def is_waiting_for_state(state: str, _, update) -> bool:
+    """
+    Helper filter to check the user's current state.
+    It handles both Message and CallbackQuery updates.
+    """
+    if isinstance(update, Message):
+        user = update.from_user
+    elif isinstance(update, CallbackQuery):
+        user = update.from_user
+    else:
         return False
-    return user_data.get(message.from_user.id, {}).get("state") == state
+    
+    if not user:
+        return False
+    
+    return user_data.get(user.id, {}).get("state") == state
 
 is_waiting_for_broadcast = filters.create(is_waiting_for_state, state="broadcast")
 is_waiting_for_thumbnail = filters.create(is_waiting_for_state, state="waiting_for_thumbnail")
