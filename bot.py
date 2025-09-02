@@ -82,8 +82,17 @@ async def is_waiting_for_state(state: str, _, update) -> bool:
     return user_data.get(user.id, {}).get("state") == state
 
 is_waiting_for_broadcast = filters.create(is_waiting_for_state, state="broadcast")
-is_waiting_for_thumbnail = filters.create(is_waiting_for_state, state="waiting_for_thumbnail")
-is_waiting_for_filename = filters.create(is_waiting_for_state, state="waiting_for_filename")
+
+# ADD these async filter functions instead:
+async def is_waiting_for_thumbnail(_, __, message: Message):
+    if not message.from_user: 
+        return False
+    return user_data.get(message.from_user.id, {}).get("state") == "waiting_for_thumbnail"
+
+async def is_waiting_for_filename(_, __, message: Message):
+    if not message.from_user: 
+        return False
+    return user_data.get(message.from_user.id, {}).get("state") == "waiting_for_filename"
 
 # ===================== MAIN HANDLERS =====================
 
@@ -327,7 +336,7 @@ async def handle_broadcast(client: Client, message: Message):
 
 # ===================== FILE HANDLERS =====================
 
-@app.on_message(filters.photo & filters.private & is_waiting_for_thumbnail)
+@app.on_message(filters.photo & filters.private & filters.create(is_waiting_for_thumbnail))
 async def thumbnail_handler(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid]:
@@ -346,7 +355,7 @@ async def thumbnail_handler(client: Client, message: Message):
         "Now, send me the **filename** (without extension) you want for the merged video."
     )
 
-@app.on_message(filters.command("no_thumbnail") & filters.private & is_waiting_for_thumbnail)
+@app.on_message(filters.command("notg_thumbnail") & filters.private & filters.create(is_waiting_for_thumbnail))
 async def no_thumbnail_handler(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid]:
@@ -358,7 +367,7 @@ async def no_thumbnail_handler(client: Client, message: Message):
         "Now, send me the **filename** (without extension) you want for the merged video."
     )
 
-@app.on_message(filters.text & filters.private & is_waiting_for_filename)
+@app.on_message(filters.text & filters.private & filters.create(is_waiting_for_filename))
 async def filename_handler(client: Client, message: Message):
     uid = message.from_user.id
     if uid not in user_data or "status_message" not in user_data[uid] or "merged_file" not in user_data[uid]:
@@ -379,18 +388,12 @@ async def filename_handler(client: Client, message: Message):
         name,
     )
     
-    await send_log_message(
-        client, "merge_activity",
-        f"📁 **File Merged & Uploaded**\n👤 User: {message.from_user.first_name} (`{uid}`)\n📎 File: `{name}.mkv`\n📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        uid
-    )
-    
     clear_user_data(uid)
 
 
 @app.on_message(
     filters.video | (filters.text & ~filters.command([
-        "start", "help", "about", "cancel", "merge", "notg_thumbnail", "no_thumbnail",
+        "start", "help", "about", "cancel", "merge", "notg_thumbnail",  # Changed from "no_thumbnail"
         "stats", "admin", "broadcast", "ban", "unban"
     ]))
 )
@@ -443,7 +446,6 @@ async def merge_command(client: Client, message: Message):
 async def callback_handler(client: Client, query: CallbackQuery):
     uid = query.from_user.id
     data = query.data
-
     try:
         if data == "check_subscription":
             if await is_user_member(client, uid, config.FORCE_SUB_CHANNEL):
@@ -462,40 +464,40 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 except Exception:
                     pass
             return
-
+            
         if data == "back_to_start":
             text = config.START_TEXT.format(bot_name=config.BOT_NAME, developer=config.DEVELOPER)
             await query.message.edit_text(text, reply_markup=get_main_keyboard())
-
+            
         elif data == "help_menu":
             await query.message.edit_text(
                 get_help_text(),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]])
             )
-
+            
         elif data == "about_menu":
             await query.message.edit_text(
                 get_about_text(),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]])
             )
-
+            
         elif data == "add_more":
             try:
                 await query.answer("📹 Send more videos or links!")
             except Exception:
                 pass
-
+                
         elif data == "clear_queue":
             clear_user_data(uid)
             await query.message.edit_text(
                 "🗑 Queue cleared!",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="back_to_start")]])
             )
-
+            
         elif data == "start_merge":
             await query.message.edit_reply_markup(None)
             await start_merge_process(client, query.message, uid)
-
+            
         elif data == "upload_tg":
             if uid not in user_data or "merged_file" not in user_data[uid]:
                 try:
@@ -503,18 +505,24 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 except Exception:
                     pass
                 return
-
+                
+            # IMPROVEMENT 1: Clear any existing state first
+            user_data[uid]["state"] = None
+            
             # Edit the message to ask for the thumbnail
             edited_message = await query.message.edit_text(
-                "🖼 **Thumbnail Selection**\n\nPlease send me a **photo** to use as the thumbnail.\n\n"
-                "To skip and use a default thumbnail, send the command /no_thumbnail"
+                "🖼 **Thumbnail Selection**\n\n"
+                "Please send me a **photo** to use as the thumbnail.\n\n"
+                "To skip and use a default thumbnail, send the command /notg_thumbnail"
             )
             
-            # Key fix: Update the status message reference in user_data
+            # Update the status message reference and set state
             user_data[uid]["status_message"] = edited_message
             user_data[uid]["state"] = "waiting_for_thumbnail"
-
-
+            
+            # IMPROVEMENT 2: Log the state change for debugging
+            logger.info(f"User {uid} state set to 'waiting_for_thumbnail'")
+            
         elif data == "upload_gofile":
             if uid not in user_data or "merged_file" not in user_data[uid]:
                 try:
@@ -522,7 +530,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 except Exception:
                     pass
                 return
-
+                
             status = await query.message.edit_text("🔗 Uploading to GoFile...")
             try:
                 uploader = GofileUploader()
@@ -530,9 +538,8 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 await status.edit_text(f"✅ **GoFile Upload Complete!**\n\n🔗 **Link:** {link}")
             except Exception as e:
                 await status.edit_text(f"❌ GoFile upload failed: {e}")
-
             clear_user_data(uid)
-
+            
         elif data.startswith("admin_"):
             if uid not in config.ADMINS and uid != config.OWNER_ID:
                 try:
@@ -541,19 +548,19 @@ async def callback_handler(client: Client, query: CallbackQuery):
                     pass
                 return
             await handle_admin_callbacks(client, query, data)
-
+            
+        # IMPROVEMENT 3: Answer the callback query for all cases
         try:
             await query.answer()
         except Exception:
             pass
-
+            
     except Exception as e:
         logger.error(f"Callback error: {e}")
         try:
             await query.answer("❌ An error occurred!", show_alert=True)
         except Exception:
             pass
-
 # ===================== HELPER FUNCTIONS =====================
 
 async def start_merge_process(client: Client, message: Message, uid: int):
