@@ -497,7 +497,6 @@ async def callback_handler(client: Client, query: CallbackQuery):
             await start_merge_process(client, query.message, uid)
 
         elif data == "upload_tg":
-            # Corrected line: Changed user_id to uid
             if uid not in user_data or "merged_file" not in user_data[uid]:
                 try:
                     await query.answer("❌ Session expired!", show_alert=True)
@@ -505,11 +504,16 @@ async def callback_handler(client: Client, query: CallbackQuery):
                     pass
                 return
 
-            user_data[uid]["state"] = "waiting_for_thumbnail"
-            await query.message.edit_text(
+            # Edit the message to ask for the thumbnail
+            edited_message = await query.message.edit_text(
                 "🖼 **Thumbnail Selection**\n\nPlease send me a **photo** to use as the thumbnail.\n\n"
                 "To skip and use a default thumbnail, send the command /no_thumbnail"
             )
+            
+            # Key fix: Update the status message reference in user_data
+            user_data[uid]["status_message"] = edited_message
+            user_data[uid]["state"] = "waiting_for_thumbnail"
+
 
         elif data == "upload_gofile":
             if uid not in user_data or "merged_file" not in user_data[uid]:
