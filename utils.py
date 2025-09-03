@@ -6,6 +6,7 @@ import json # Import json for parsing ffprobe output
 import os
 import re
 import shutil
+import humanize
 
 def get_human_readable_size(size_in_bytes: int) -> str:
     """Formats size in bytes to a human-readable string (KB, MB, GB). (This function was fine, no changes needed)"""
