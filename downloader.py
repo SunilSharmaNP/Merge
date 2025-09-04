@@ -252,7 +252,7 @@ async def _perform_download_request(session: aiohttp.ClientSession, url: str, de
 
 async def download_from_url(url: str, user_id: int, status_message) -> str | None:
     """Enhanced URL download with professional progress tracking and robust error handling."""
-    
+    start_time = time.time()
     # Validate URL first
     is_valid, error_msg = validate_url(url)
     if not is_valid:
