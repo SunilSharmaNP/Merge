@@ -277,7 +277,7 @@ async def download_from_url(url: str, user_id: int, status_message) -> str | Non
         # Initial status
         await smart_progress_editor(
             status_message, 
-            f"🔍 **Connecting to server...**\n\n📁 **File:** `{file_name}`\n🌐 **URL:** `{url[:70]}...`" # Truncate URL for display
+            f"🔍 **Connecting to server...**\n\n📁 **File:** `{file_name}`\n🌐 **URL:** ``{file_name}``" # Truncate URL for display
         )
         
         # Setup session with proper headers and timeouts
