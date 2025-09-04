@@ -11,6 +11,9 @@ from tenacity import retry, stop_after_attempt, wait_exponential, \
     retry_if_exception_type, RetryError
 from urllib.parse import urlparse, unquote
 import re # For filename sanitization
+import requests
+from hashlib import sha256
+import json
 
 # Set up logging for better debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,14 +24,22 @@ last_edit_time = {}
 EDIT_THROTTLE_SECONDS = 3.0 # Update progress every 3 seconds
 
 # --- Configuration for Downloader ---
-DOWNLOAD_CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB chunks for writing to disk
+DOWNLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # Increased to 8 MB chunks for faster downloads
 DOWNLOAD_CONNECT_TIMEOUT = 60         # 60 seconds to establish connection
-DOWNLOAD_READ_TIMEOUT = 300           # 300 seconds (5 min) between reads for large files
+DOWNLOAD_READ_TIMEOUT = 600           # Increased to 600 seconds (10 min) for large files
 DOWNLOAD_RETRY_ATTEMPTS = 5
 DOWNLOAD_RETRY_WAIT_MIN = 5           # seconds
 DOWNLOAD_RETRY_WAIT_MAX = 60          # seconds
 MAX_URL_LENGTH = 2048                 # Maximum reasonable URL length for most systems
 # --- End Configuration ---
+
+# Gofile.io configuration
+GOFILE_API_URL = "https://api.gofile.io"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+PASSWORD_ERROR_MESSAGE = "ERROR: Password is required for this link\n\nUse: /cmd {link} password"
+
+class DirectDownloadLinkException(Exception):
+    pass
 
 async def smart_progress_editor(status_message, text: str):
     """Smart progress editor with throttling to avoid flood limits."""
@@ -101,8 +112,8 @@ def validate_url(url: str) -> tuple[bool, str]:
     if not all([parsed_url.scheme, parsed_url.netloc]):
         return False, "URL must have a scheme (http/https) and network location."
     
-    # Allow only http/https schemes
-    if parsed_url.scheme not in ('http', 'https'):
+    # Allow only http/https schemes and gofile.io
+    if parsed_url.scheme not in ('http', 'https') and 'gofile.io' not in parsed_url.netloc:
         return False, "URL scheme must be http or https."
     
     # Check for suspicious extensions in path (basic check)
@@ -156,6 +167,112 @@ def get_filename_from_url(url: str, fallback_name: str = None) -> str:
         logger.error(f"Error extracting filename from URL '{url}': {e}")
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         return fallback_name or f"download_error_{timestamp_str}.bin"
+
+def handle_gofile_url(url: str, password: str = None) -> tuple:
+    """
+    Handle gofile.io URLs and return direct download link.
+    Based on the provided gofile function.
+    """
+    try:
+        _password = sha256(password.encode("utf-8")).hexdigest() if password else ""
+        _id = url.split("/")[-1]
+    except Exception as e:
+        raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}")
+
+    def __get_token(session):
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+        }
+        __url = f"{GOFILE_API_URL}/accounts"
+        try:
+            __res = session.post(__url, headers=headers).json()
+            if __res["status"] != "ok":
+                raise DirectDownloadLinkException("ERROR: Failed to get token.")
+            return __res["data"]["token"]
+        except Exception as e:
+            raise e
+
+    def __fetch_links(session, _id, folderPath=""):
+        _url = f"{GOFILE_API_URL}/contents/{_id}?wt=4fd6sg89d7s6&cache=true"
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+            "Authorization": "Bearer" + " " + token,
+        }
+        if _password:
+            _url += f"&password={_password}"
+        try:
+            _json = session.get(_url, headers=headers).json()
+        except Exception as e:
+            raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}")
+        if _json["status"] in "error-passwordRequired":
+            raise DirectDownloadLinkException(
+                f"ERROR:\n{PASSWORD_ERROR_MESSAGE.format(url=url)}"
+            )
+        if _json["status"] in "error-passwordWrong":
+            raise DirectDownloadLinkException("ERROR: This password is wrong !")
+        if _json["status"] in "error-notFound":
+            raise DirectDownloadLinkException(
+                "ERROR: File not found on gofile's server"
+            )
+        if _json["status"] in "error-notPublic":
+            raise DirectDownloadLinkException("ERROR: This folder is not public")
+
+        data = _json["data"]
+
+        if not details["title"]:
+            details["title"] = data["name"] if data["type"] == "folder" else _id
+
+        contents = data["children"]
+        for content in contents.values():
+            if content["type"] == "folder":
+                if not content["public"]:
+                    continue
+                if not folderPath:
+                    newFolderPath = os.path.join(details["title"], content["name"])
+                else:
+                    newFolderPath = os.path.join(folderPath, content["name"])
+                __fetch_links(session, content["id"], newFolderPath)
+            else:
+                if not folderPath:
+                    folderPath = details["title"]
+                item = {
+                    "path": os.path.join(folderPath),
+                    "filename": content["name"],
+                    "url": content["link"],
+                }
+                if "size" in content:
+                    size = content["size"]
+                    if isinstance(size, str) and size.isdigit():
+                        size = float(size)
+                    details["total_size"] += size
+                details["contents"].append(item)
+
+    details = {"contents": [], "title": "", "total_size": 0}
+    with requests.Session() as session:
+        try:
+            token = __get_token(session)
+        except Exception as e:
+            raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}")
+        details["header"] = f"Cookie: accountToken={token}"
+        try:
+            __fetch_links(session, _id)
+        except Exception as e:
+            raise DirectDownloadLinkException(e)
+
+    if len(details["contents"]) == 1:
+        return (details["contents"][0]["url"], details["header"])
+    elif len(details["contents"]) > 1:
+        # For multiple files, return the first one
+        logger.warning(f"Gofile link has multiple files. Downloading the first one: {details['contents'][0]['filename']}")
+        return (details["contents"][0]["url"], details["header"])
+    else:
+        raise DirectDownloadLinkException("No downloadable content found in gofile link")
 
 @retry(
     stop=stop_after_attempt(DOWNLOAD_RETRY_ATTEMPTS),
@@ -247,14 +364,54 @@ async def _perform_download_request(session: aiohttp.ClientSession, url: str, de
         logger.error(f"Unexpected error during download: {e} for {url}", exc_info=True)
         raise e
 
-async def download_from_url(url: str, user_id: int, status_message) -> str | None:
+async def download_from_url(url: str, user_id: int, status_message, password: str = None) -> str | None:
     """Enhanced URL download with professional progress tracking and robust error handling."""
     start_time = time.time()
+    # Handle extremely long URLs
+    if len(url) > 1500:  # If URL is very long
+        await smart_progress_editor(status_message, "🔍 **Processing long URL...**")
+        processed_url, additional_headers = handle_long_url(url)
+        if processed_url != url:
+            url = processed_url
+            await smart_progress_editor(status_message, f"✅ **Long URL processed!**\n\nUsing alternative method for download.")
+    
     # Validate URL first
     is_valid, error_msg = validate_url(url)
     if not is_valid:
         await smart_progress_editor(status_message, f"❌ **Invalid URL!**\n\n🚨 **Error:** {error_msg}")
         return None
+    
+    # Validate URL first
+    is_valid, error_msg = validate_url(url)
+    if not is_valid:
+        await smart_progress_editor(status_message, f"❌ **Invalid URL!**\n\n🚨 **Error:** {error_msg}")
+        return None
+    
+    # Handle gofile.io URLs
+    parsed_url = urlparse(url)
+    headers_dict = {}
+    if 'gofile.io' in parsed_url.netloc:
+        try:
+            await smart_progress_editor(status_message, "🔍 **Processing gofile.io link...**")
+            # Run the synchronous gofile handling in a thread
+            direct_url, headers_str = await asyncio.to_thread(handle_gofile_url, url, password)
+            
+            # Parse headers string into dictionary
+            if headers_str:
+                for header_line in headers_str.split('\n'):
+                    if ':' in header_line:
+                        key, value = header_line.split(':', 1)
+                        headers_dict[key.strip()] = value.strip()
+            
+            # Update URL to direct download link
+            url = direct_url
+            await smart_progress_editor(status_message, f"✅ **Gofile.io link processed!**\n\n📁 **Direct URL:** `{url[:70]}...`")
+        except DirectDownloadLinkException as e:
+            await smart_progress_editor(status_message, f"❌ **Gofile.io Error!**\n\n🚨 **Error:** {str(e)}")
+            return None
+        except Exception as e:
+            await smart_progress_editor(status_message, f"❌ **Gofile.io Processing Failed!**\n\n🚨 **Error:** {str(e)}")
+            return None
     
     # Setup paths
     file_name = get_filename_from_url(url)
@@ -284,13 +441,19 @@ async def download_from_url(url: str, user_id: int, status_message) -> str | Non
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Cache-Control': 'no-cache',
             'Referer': url # Sometimes helpful
         }
+        
+        # Add gofile headers if available
+        if headers_dict:
+            headers.update(headers_dict)
         
         timeout_config = aiohttp.ClientTimeout(
             total=None,  # No total timeout, individual components have timeouts
             connect=DOWNLOAD_CONNECT_TIMEOUT,  # 60 seconds to connect
-            sock_read=DOWNLOAD_READ_TIMEOUT   # 300 seconds (5 min) between reads
+            sock_read=DOWNLOAD_READ_TIMEOUT   # 600 seconds (10 min) between reads
         )
         
         actual_downloaded_size = 0 # Track bytes for final verification
@@ -437,6 +600,9 @@ async def download_from_url(url: str, user_id: int, status_message) -> str | Non
             os.remove(dest_path) # Clean up incomplete file
         await smart_progress_editor(status_message, error_text.strip())
         return None
+
+# The rest of the file remains the same (download_from_tg and other functions)
+# ... [rest of the code remains unchanged] ...
 
 async def download_from_tg(message, user_id: int, status_message) -> str | None:
     """Enhanced Telegram download with professional progress tracking."""
