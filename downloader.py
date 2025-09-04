@@ -202,12 +202,9 @@ async def _perform_download_request(session: aiohttp.ClientSession, url: str, de
                             
                             progress_text = f"""
 📥 **Downloading from URL...**
-
-📁 **File:** `{os.path.basename(dest_path)}`
+📁 **File:** `{os.path.basename(dest_path)}`  # This already shows the filename
 📊 **Total Size:** `{get_human_readable_size(total_size)}`
-
 {get_progress_bar(progress_percent)} `{progress_percent:.1%}`
-
 📈 **Downloaded:** `{get_human_readable_size(downloaded)}`
 🚀 **Speed:** `{speed}`
 ⏱ **ETA:** `{eta}`
@@ -277,7 +274,7 @@ async def download_from_url(url: str, user_id: int, status_message) -> str | Non
         # Initial status
         await smart_progress_editor(
             status_message, 
-            f"🔍 **Connecting to server...**\n\n📁 **File:** `{file_name}`\n🌐 **URL:** ``{file_name}``" # Truncate URL for display
+            f"🔍 **Connecting to server...**\n\n📁 **File:** `{file_name}`"
         )
         
         # Setup session with proper headers and timeouts
