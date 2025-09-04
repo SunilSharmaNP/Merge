@@ -202,7 +202,7 @@ async def _perform_download_request(session: aiohttp.ClientSession, url: str, de
                             
                             progress_text = f"""
 📥 **Downloading from URL...**
-📁 **File:** `{os.path.basename(dest_path)}`  # This already shows the filename
+📁 **File:** `{os.path.basename(dest_path)}`
 📊 **Total Size:** `{get_human_readable_size(total_size)}`
 {get_progress_bar(progress_percent)} `{progress_percent:.1%}`
 📈 **Downloaded:** `{get_human_readable_size(downloaded)}`
