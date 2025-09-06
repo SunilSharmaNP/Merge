@@ -355,18 +355,6 @@ async def thumbnail_handler(client: Client, message: Message):
         "Now, send me the **filename** (without extension) you want for the merged video."
     )
 
-@app.on_message(filters.command("notg_thumbnail") & filters.private & filters.create(is_waiting_for_thumbnail))
-async def no_thumbnail_handler(client: Client, message: Message):
-    uid = message.from_user.id
-    if uid not in user_data or "status_message" not in user_data[uid]:
-        return await message.reply_text("❌ Session expired. Please start over.")
-    
-    user_data[uid].update({"custom_thumbnail": None, "state": "waiting_for_filename"})
-    await user_data[uid]["status_message"].edit_text(
-        "👍 **Okay, I will generate a default thumbnail.**\n\n"
-        "Now, send me the **filename** (without extension) you want for the merged video."
-    )
-
 @app.on_message(filters.text & filters.private & filters.create(is_waiting_for_filename))
 async def filename_handler(client: Client, message: Message):
     uid = message.from_user.id
@@ -393,7 +381,7 @@ async def filename_handler(client: Client, message: Message):
 
 @app.on_message(
     filters.video | (filters.text & ~filters.command([
-        "start", "help", "about", "cancel", "merge", "notg_thumbnail",  # Changed from "no_thumbnail"
+        "start", "help", "about", "cancel", "merge",
         "stats", "admin", "broadcast", "ban", "unban"
     ]))
 )
