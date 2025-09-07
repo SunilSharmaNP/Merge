@@ -1,362 +1,336 @@
-# database.py - OPTIMIZED VERSION with enhanced logging
+# database.py - Enhanced MongoDB Database Management with Logging
 import motor.motor_asyncio
-from datetime import datetime, timedelta
-import logging
-from typing import List, Dict, Optional
+from datetime import datetime
 from config import config
+import logging
 
 logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
-        self.client = None
-        self.db = None
-        self.users = None
-        self.settings = None
-        self.logs = None
-        self.stats = None
-        self.merges = None
-        self.connected = False
+        self.client = motor.motor_asyncio.AsyncIOMotorClient(config.MONGO_URI)
+        self.db = self.client[config.DATABASE_NAME]
 
-    async def connect(self):
-        """Connect to MongoDB with enhanced error handling"""
+        # Collections
+        self.users = self.db.users
+        self.authorized_chats = self.db.authorized_chats
+        self.merge_logs = self.db.merge_logs
+        self.file_logs = self.db.file_logs  # New collection for file logs
+        self.broadcast_logs = self.db.broadcast_logs
+
+    # ==================== USER MANAGEMENT ====================
+    
+    async def add_user(self, user_id: int, username: str = None, first_name: str = None):
+        """Add new user to database (upsert) with enhanced logging."""
         try:
-            if not config.MONGO_URI or config.MONGO_URI == "mongodb://localhost:27017":
-                logger.warning("MongoDB URI not provided or using default. Database features disabled.")
-                self.connected = False
-                return False
-
-            self.client = motor.motor_asyncio.AsyncIOMotorClient(config.MONGO_URI)
-            self.db = self.client[config.DB_NAME]
-
-            # Initialize collections
-            self.users = self.db.users
-            self.settings = self.db.settings
-            self.logs = self.db.logs
-            self.stats = self.db.stats
-            self.merges = self.db.merges
-
-            # Test connection
-            await self.client.admin.command('ping')
-
-            # Create optimized indexes
-            await self._create_indexes()
-
-            self.connected = True
-            logger.info("✅ MongoDB connected successfully!")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ Failed to connect to MongoDB: {e}")
-            self.connected = False
-            return False
-
-    async def _create_indexes(self):
-        """Create database indexes for optimal performance"""
-        try:
-            # Users collection indexes
-            await self.users.create_index("user_id", unique=True)
-            await self.users.create_index("is_banned")
-            await self.users.create_index("is_authorized")
-            await self.users.create_index("last_activity")
-            
-            # Logs collection indexes
-            await self.logs.create_index("timestamp")
-            await self.logs.create_index("type")
-            
-            # Stats collection indexes
-            await self.stats.create_index("date", unique=True)
-            
-            # Merges collection indexes
-            await self.merges.create_index([("user_id", 1), ("timestamp", -1)])
-            await self.merges.create_index("timestamp")
-            
-            logger.info("✅ Database indexes created successfully!")
-            
-        except Exception as e:
-            logger.error(f"Error creating indexes: {e}")
-
-    async def add_user(self, user_id: int, name: str, username: str = None):
-        """Add new user with enhanced data"""
-        if not self.connected:
-            logger.debug("Database not connected, skipping user add")
-            return False
-
-        try:
-            user_doc = {
+            user_data = {
                 "user_id": user_id,
-                "name": name,
                 "username": username,
-                "join_date": datetime.now(),
+                "first_name": first_name,
+                "join_date": datetime.utcnow(),
                 "is_banned": False,
                 "merge_count": 0,
-                "last_activity": datetime.now(),
-                "is_authorized": user_id in config.AUTHORIZED_USERS or user_id == config.OWNER_ID or user_id in config.ADMINS
+                "last_used": datetime.utcnow(),
+                "total_uploads": 0,
+                "total_file_size": 0
             }
-
-            result = await self.users.update_one(
-                {"user_id": user_id},
-                {
-                    "$setOnInsert": user_doc,
-                    "$set": {
-                        "last_activity": datetime.now(),
-                        "name": name,  # Update name if changed
-                        "username": username  # Update username if changed
+            
+            # Check if user already exists
+            existing_user = await self.users.find_one({"user_id": user_id})
+            if existing_user:
+                # Update existing user info
+                await self.users.update_one(
+                    {"user_id": user_id},
+                    {
+                        "$set": {
+                            "username": username,
+                            "first_name": first_name,
+                            "last_used": datetime.utcnow()
+                        }
                     }
-                },
-                upsert=True
-            )
-
-            return True
-
+                )
+                return False  # User already existed
+            else:
+                # Insert new user
+                await self.users.insert_one(user_data)
+                logger.info(f"New user added: {user_id} - {first_name}")
+                return True  # New user added
+                
         except Exception as e:
-            logger.error(f"Error adding user {user_id}: {e}")
+            logger.error(f"Error add_user({user_id}): {e}")
             return False
 
-    async def update_user_activity(self, user_id: int) -> bool:
-        """Update user's last activity"""
-        if not self.connected:
-            return False
-        
-        try:
-            result = await self.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"last_activity": datetime.now()}}
-            )
-            return result.modified_count > 0
-        except Exception as e:
-            logger.error(f"Error updating user activity for {user_id}: {e}")
-            return False
-
-    async def get_user(self, user_id: int) -> Optional[Dict]:
-        """Get user information"""
-        if not self.connected:
-            return None
-
+    async def get_user(self, user_id: int):
+        """Fetch user record."""
         try:
             return await self.users.find_one({"user_id": user_id})
         except Exception as e:
-            logger.error(f"Error getting user {user_id}: {e}")
+            logger.error(f"Error get_user({user_id}): {e}")
             return None
 
-    async def is_user_banned(self, user_id: int) -> bool:
-        """Check if user is banned"""
-        if not self.connected:
+    async def update_user_activity(self, user_id: int):
+        """Update last_used timestamp."""
+        try:
+            await self.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"last_used": datetime.utcnow()}}
+            )
+        except Exception as e:
+            logger.error(f"Error update_user_activity({user_id}): {e}")
+
+    async def increment_merge_count(self, user_id: int):
+        """Increment merge_count."""
+        try:
+            await self.users.update_one(
+                {"user_id": user_id},
+                {"$inc": {"merge_count": 1}}
+            )
+        except Exception as e:
+            logger.error(f"Error increment_merge_count({user_id}): {e}")
+
+    async def update_user_stats(self, user_id: int, file_size: int = 0):
+        """Update user upload statistics."""
+        try:
+            await self.users.update_one(
+                {"user_id": user_id},
+                {
+                    "$inc": {
+                        "total_uploads": 1,
+                        "total_file_size": file_size
+                    }
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error update_user_stats({user_id}): {e}")
+
+    # ==================== BAN MANAGEMENT ====================
+    
+    async def ban_user(self, user_id: int, banned: bool = True):
+        """Ban or unban a user."""
+        try:
+            await self.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"is_banned": banned, "ban_date": datetime.utcnow() if banned else None}}
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error ban_user({user_id}, {banned}): {e}")
             return False
 
+    async def is_user_banned(self, user_id: int) -> bool:
+        """Check ban status."""
         try:
             user = await self.users.find_one({"user_id": user_id})
             return user.get("is_banned", False) if user else False
         except Exception as e:
-            logger.error(f"Error checking ban status for {user_id}: {e}")
+            logger.error(f"Error is_user_banned({user_id}): {e}")
             return False
 
-    async def is_user_authorized(self, user_id: int) -> bool:
-        """Check if user is authorized"""
-        # Check config first for quick response
-        if user_id == config.OWNER_ID or user_id in config.ADMINS or user_id in config.AUTHORIZED_USERS:
-            return True
-
-        if not self.connected:
-            return False
-
+    # ==================== USER STATISTICS ====================
+    
+    async def get_total_users(self) -> int:
+        """Return total user count."""
         try:
-            user = await self.users.find_one({"user_id": user_id})
-            return user.get("is_authorized", False) if user else False
+            return await self.users.count_documents({})
         except Exception as e:
-            logger.error(f"Error checking authorization for {user_id}: {e}")
-            return False
+            logger.error(f"Error get_total_users: {e}")
+            return 0
 
-    async def ban_user(self, user_id: int, ban_status: bool) -> bool:
-        """Ban or unban user"""
-        if not self.connected:
-            return False
-
+    async def get_all_users(self) -> list[int]:
+        """Return list of all user_ids."""
         try:
-            result = await self.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"is_banned": ban_status}}
-            )
-            return result.modified_count > 0
+            cursor = self.users.find({}, {"user_id": 1})
+            return [doc["user_id"] async for doc in cursor]
         except Exception as e:
-            logger.error(f"Error updating ban status for {user_id}: {e}")
-            return False
+            logger.error(f"Error get_all_users: {e}")
+            return []
 
-    async def authorize_user(self, user_id: int, auth_status: bool) -> bool:
-        """Authorize or unauthorize user"""
-        if not self.connected:
-            return False
-
+    # ==================== AUTHORIZED CHATS ====================
+    
+    async def add_authorized_chat(self, chat_id: int, chat_title: str = None):
+        """Add or upsert authorized group/chat."""
         try:
-            result = await self.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"is_authorized": auth_status}}
-            )
-            return result.modified_count > 0
-        except Exception as e:
-            logger.error(f"Error updating authorization for {user_id}: {e}")
-            return False
-
-    async def increment_merge_count(self, user_id: int):
-        """Increment user's merge count and update stats"""
-        if not self.connected:
-            return
-
-        try:
-            # Update user merge count
-            await self.users.update_one(
-                {"user_id": user_id},
-                {
-                    "$inc": {"merge_count": 1},
-                    "$set": {"last_activity": datetime.now()}
-                }
-            )
-
-            # Update daily stats
-            today = datetime.now().date()
-            await self.stats.update_one(
-                {"date": today},
-                {
-                    "$inc": {"merges": 1},
-                    "$setOnInsert": {"date": today, "users": 0}
-                },
+            data = {
+                "chat_id": chat_id,
+                "chat_title": chat_title,
+                "added_date": datetime.utcnow(),
+                "is_active": True
+            }
+            await self.authorized_chats.update_one(
+                {"chat_id": chat_id},
+                {"$setOnInsert": data},
                 upsert=True
             )
-
+            return True
         except Exception as e:
-            logger.error(f"Error incrementing merge count for {user_id}: {e}")
+            logger.error(f"Error add_authorized_chat({chat_id}): {e}")
+            return False
 
-    async def log_merge(self, user_id: int, user_name: str, video_count: int, file_size: int, merge_time: float):
-        """Log merge activity for analytics"""
-        if not self.connected:
-            return
-
+    async def remove_authorized_chat(self, chat_id: int) -> bool:
+        """Deactivate or delete authorized chat."""
         try:
-            merge_doc = {
+            result = await self.authorized_chats.delete_one({"chat_id": chat_id})
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Error remove_authorized_chat({chat_id}): {e}")
+            return False
+
+    async def is_authorized_chat(self, chat_id: int) -> bool:
+        """Check if chat is in authorized list."""
+        try:
+            doc = await self.authorized_chats.find_one({"chat_id": chat_id})
+            return bool(doc and doc.get("is_active", False))
+        except Exception as e:
+            logger.error(f"Error is_authorized_chat({chat_id}): {e}")
+            return False
+
+    # ==================== MERGE LOGGING ====================
+    
+    async def log_merge(self, user_id: int, file_count: int, file_size: int, merge_time: float, output_filename: str = None):
+        """Record merge activity with enhanced details."""
+        try:
+            merge_data = {
                 "user_id": user_id,
-                "user_name": user_name,
-                "video_count": video_count,
+                "file_count": file_count,
                 "file_size": file_size,
                 "merge_time": merge_time,
-                "timestamp": datetime.now(),
+                "output_filename": output_filename,
+                "timestamp": datetime.utcnow(),
                 "success": True
             }
-
-            await self.merges.insert_one(merge_doc)
-
+            await self.merge_logs.insert_one(merge_data)
+            
+            # Update user merge count
+            await self.increment_merge_count(user_id)
+            
+            return True
         except Exception as e:
-            logger.error(f"Error logging merge for {user_id}: {e}")
+            logger.error(f"Error log_merge: {e}")
+            return False
 
-    async def get_all_users(self) -> List[int]:
-        """Get all active user IDs for broadcasting"""
-        if not self.connected:
-            return []
-
+    async def log_merge_error(self, user_id: int, error_message: str, file_count: int = 0):
+        """Log failed merge attempts."""
         try:
-            cursor = self.users.find(
-                {"is_banned": {"$ne": True}}, 
-                {"user_id": 1}
-            )
-            users = await cursor.to_list(length=None)
-            return [user["user_id"] for user in users]
-
-        except Exception as e:
-            logger.error(f"Error getting all users: {e}")
-            return []
-
-    async def get_bot_stats(self) -> Dict:
-        """Get comprehensive bot statistics"""
-        if not self.connected:
-            return {
-                "total_users": 0,
-                "banned_users": 0,
-                "authorized_users": 0,
-                "total_merges": 0,
-                "today_merges": 0,
-                "active_users_24h": 0,
-                "bot_start_date": "Database not connected"
+            error_data = {
+                "user_id": user_id,
+                "file_count": file_count,
+                "error_message": error_message,
+                "timestamp": datetime.utcnow(),
+                "success": False
             }
+            await self.merge_logs.insert_one(error_data)
+            return True
+        except Exception as e:
+            logger.error(f"Error log_merge_error: {e}")
+            return False
 
+    # ==================== FILE LOGGING (NEW) ====================
+    
+    async def log_file_activity(self, user_id: int, file_name: str, file_size: int, upload_type: str, file_url: str = None):
+        """Log file upload/merge activities for FLOG channel."""
         try:
-            # Total users
+            file_data = {
+                "user_id": user_id,
+                "file_name": file_name,
+                "file_size": file_size,
+                "upload_type": upload_type,  # "merge", "upload", "download"
+                "file_url": file_url,
+                "timestamp": datetime.utcnow()
+            }
+            await self.file_logs.insert_one(file_data)
+            
+            # Update user stats
+            await self.update_user_stats(user_id, file_size)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error log_file_activity: {e}")
+            return False
+
+    async def get_recent_file_logs(self, limit: int = 50) -> list[dict]:
+        """Get recent file activities."""
+        try:
+            cursor = self.file_logs.find().sort("timestamp", -1).limit(limit)
+            return [doc async for doc in cursor]
+        except Exception as e:
+            logger.error(f"Error get_recent_file_logs: {e}")
+            return []
+
+    # ==================== USER STATISTICS ====================
+    
+    async def get_user_stats(self, user_id: int) -> dict | None:
+        """Return enhanced user stats."""
+        try:
+            user = await self.users.find_one({"user_id": user_id})
+            if not user:
+                return None
+            return {
+                "merge_count": user.get("merge_count", 0),
+                "total_uploads": user.get("total_uploads", 0),
+                "total_file_size": user.get("total_file_size", 0),
+                "join_date": user.get("join_date"),
+                "last_used": user.get("last_used"),
+                "username": user.get("username"),
+                "first_name": user.get("first_name")
+            }
+        except Exception as e:
+            logger.error(f"Error get_user_stats({user_id}): {e}")
+            return None
+
+    async def get_bot_stats(self) -> dict:
+        """Return enhanced bot stats."""
+        try:
             total_users = await self.users.count_documents({})
-
-            # Banned users
-            banned_users = await self.users.count_documents({"is_banned": True})
-
-            # Authorized users
-            authorized_users = await self.users.count_documents({"is_authorized": True})
-
-            # Total merges from user merge_count
-            total_merges_pipeline = [
-                {"$group": {"_id": None, "total": {"$sum": "$merge_count"}}}
-            ]
-            total_merges_result = await self.users.aggregate(total_merges_pipeline).to_list(length=1)
-            total_merges = total_merges_result[0]["total"] if total_merges_result else 0
-
-            # Today's merges
-            today = datetime.now().date()
-            today_stats = await self.stats.find_one({"date": today})
-            today_merges = today_stats.get("merges", 0) if today_stats else 0
-
-            # Active users in last 24 hours
-            yesterday = datetime.now() - timedelta(days=1)
-            active_users_24h = await self.users.count_documents({
-                "last_activity": {"$gte": yesterday}
+            total_merges = await self.merge_logs.count_documents({"success": True})
+            total_files = await self.file_logs.count_documents({})
+            today_cutoff = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_merges = await self.merge_logs.count_documents({
+                "timestamp": {"$gte": today_cutoff},
+                "success": True
             })
-
-            # Bot start date
-            first_user = await self.users.find_one({}, sort=[("join_date", 1)])
-            bot_start_date = first_user["join_date"].strftime("%Y-%m-%d") if first_user else "Unknown"
-
+            today_files = await self.file_logs.count_documents({
+                "timestamp": {"$gte": today_cutoff}
+            })
+            
             return {
                 "total_users": total_users,
-                "banned_users": banned_users,
-                "authorized_users": authorized_users,
                 "total_merges": total_merges,
+                "total_files": total_files,
                 "today_merges": today_merges,
-                "active_users_24h": active_users_24h,
-                "bot_start_date": bot_start_date
+                "today_files": today_files
             }
-
         except Exception as e:
-            logger.error(f"Error getting bot stats: {e}")
+            logger.error(f"Error get_bot_stats: {e}")
             return {
-                "total_users": 0,
-                "banned_users": 0,
-                "authorized_users": 0,
-                "total_merges": 0,
-                "today_merges": 0,
-                "active_users_24h": 0,
-                "bot_start_date": "Error"
+                "total_users": 0, "total_merges": 0, "total_files": 0,
+                "today_merges": 0, "today_files": 0
             }
 
+    # ==================== BROADCAST LOGGING ====================
+    
     async def log_broadcast(self, message_id: str, success: int, failed: int, total: int):
-        """Log broadcast activity"""
-        if not self.connected:
-            return
-
+        """Record broadcast summary."""
         try:
-            log_doc = {
-                "type": "broadcast",
+            await self.broadcast_logs.insert_one({
                 "message_id": message_id,
                 "success": success,
                 "failed": failed,
                 "total": total,
-                "timestamp": datetime.now()
-            }
-
-            await self.logs.insert_one(log_doc)
-
+                "timestamp": datetime.utcnow()
+            })
+            return True
         except Exception as e:
-            logger.error(f"Error logging broadcast: {e}")
+            logger.error(f"Error log_broadcast: {e}")
+            return False
 
-    async def close(self):
-        """Close database connection"""
-        if self.client:
-            self.client.close()
-            self.connected = False
-            logger.info("Database connection closed")
+    async def get_broadcast_logs(self) -> list[dict]:
+        """Fetch recent broadcast logs."""
+        try:
+            cursor = self.broadcast_logs.find().sort("timestamp", -1).limit(10)
+            return [doc async for doc in cursor]
+        except Exception as e:
+            logger.error(f"Error get_broadcast_logs: {e}")
+            return []
 
-# Initialize database instance
+# Global instance
 db = Database()
