@@ -6,8 +6,9 @@ from aiohttp import ClientSession, FormData, ClientTimeout
 from random import choice
 from config import config
 from utils import get_human_readable_size, get_progress_bar, get_video_properties
-from helpers import send_log_message
 import logging
+from helpers import send_merge_log
+from database import db
 
 logger = logging.getLogger(__name__)
 
