@@ -1,277 +1,229 @@
-# config.py - Enhanced Configuration with better channel parsing
+# config.py - Enhanced Configuration
 import os
-from typing import List, Union
+from dotenv import load_dotenv
 
-def parse_channel_id(channel_str: str) -> Union[int, str, None]:
-    """Enhanced channel ID parsing with better error handling"""
-    if not channel_str:
-        return None
-    
-    channel_str = channel_str.strip()
-    
-    # Handle integer IDs (including negative ones for supergroups)
-    try:
-        channel_id = int(channel_str)
-        return channel_id
-    except ValueError:
-        pass
-    
-    # Handle string usernames
-    if channel_str.startswith('@'):
-        return channel_str
-    elif channel_str.startswith('https://t.me/'):
-        # Extract username from t.me link
-        username = channel_str.split('/')[-1]
-        if username and not username.isdigit():
-            return f"@{username}"
-        else:
-            # It might be a private group link
-            return channel_str
-    else:
-        # Assume it's a username without @
-        if not channel_str.isdigit():
-            return f"@{channel_str}"
-        else:
-            # It's a numeric string, convert to int
-            try:
-                return int(channel_str)
-            except ValueError:
-                return channel_str
-
-def parse_list_from_env(env_var: str, default: list = None) -> List[int]:
-    """Parse list of integers from environment variable"""
-    if default is None:
-        default = []
-    
-    env_value = os.environ.get(env_var, "")
-    if not env_value:
-        return default
-    
-    try:
-        return [int(x.strip()) for x in env_value.split(",") if x.strip().isdigit()]
-    except ValueError:
-        return default
+# Load environment variables from config.env
+load_dotenv('config.env')
 
 class Config:
-    # ===================== BOT CONFIGURATION =====================
+    """Enhanced Configuration class for the bot with logging support."""
     
-    # Required API credentials
-    API_ID = int(os.environ.get("API_ID", "0"))
-    API_HASH = os.environ.get("API_HASH", "")
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+    # ==================== TELEGRAM BOT CONFIGURATION ====================
+    API_ID = os.environ.get("API_ID")
+    API_HASH = os.environ.get("API_HASH")
+    BOT_TOKEN = os.environ.get("BOT_TOKEN")
     
-    # Bot Information
-    BOT_NAME = os.environ.get("BOT_NAME", "Professional Video Merger Bot")
-    DEVELOPER = os.environ.get("DEVELOPER", "@YourUsername")
+    # ==================== MONGODB CONFIGURATION ====================
+    MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+    DATABASE_NAME = os.environ.get("DATABASE_NAME", "video_merger_bot")
     
-    # ===================== USER MANAGEMENT =====================
+    # ==================== CHANNEL & GROUP CONFIGURATION ====================
+    # Force Subscribe Channel (Required to use bot)
+    FORCE_SUB_CHANNEL = os.environ.get("FORCE_SUB_CHANNEL", "")
     
-    # Owner and Admins
-    OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
-    ADMINS = parse_list_from_env("ADMINS")
-    
-    # Authorized Users and Chats
-    AUTHORIZED_USERS = parse_list_from_env("AUTHORIZED_USERS")
-    AUTHORIZED_CHATS = parse_list_from_env("AUTHORIZED_CHATS")
-    
-    # ===================== CHANNELS CONFIGURATION =====================
-    
-    # Force Subscribe Channel (REQUIRED)
-    FORCE_SUB_CHANNEL = parse_channel_id(os.environ.get("FORCE_SUB_CHANNEL"))
-    
-    # Optional Channels
+    # Update Channel (For updates button)
     UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "")
+    
+    # Support Group (For support button)
     SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP", "")
     
-    # Logging Channels
-    LOG_CHANNEL = parse_channel_id(os.environ.get("LOG_CHANNEL"))
-    NEW_USER_LOG_CHANNEL = parse_channel_id(os.environ.get("NEW_USER_LOG_CHANNEL"))
-    MERGED_FILE_LOG_CHANNEL = parse_channel_id(os.environ.get("MERGED_FILE_LOG_CHANNEL"))
+    # ==================== ADMIN CONFIGURATION ====================
+    OWNER_ID = os.environ.get("OWNER_ID")
+    ADMINS = os.environ.get("ADMINS", "")
     
-    # ===================== DATABASE CONFIGURATION =====================
+    # ==================== ENHANCED LOGGING CHANNELS ====================
+    # Main log channel for user activities (ULOG)
+    LOG_CHANNEL = os.environ.get("LOG_CHANNEL")
+    ULOG_CHANNEL = os.environ.get("ULOG_CHANNEL")  # New user logs
     
-    MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-    DB_NAME = os.environ.get("DB_NAME", "video_merger_bot")
+    # File merge activity logging (FLOG)
+    MERGE_LOG_CHANNEL = os.environ.get("MERGE_LOG_CHANNEL") 
+    FLOG_CHANNEL = os.environ.get("FLOG_CHANNEL")  # Merged file logs
     
-    # ===================== FILE CONFIGURATION =====================
+    # ==================== FILE STORAGE ====================
+    DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "downloads")
+    GOFILE_TOKEN = os.environ.get("GOFILE_TOKEN")
     
-    DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "./downloads")
-    MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE", "2147483648"))  # 2GB default
+    # ==================== BOT SETTINGS ====================
+    BOT_NAME = os.environ.get("BOT_NAME", "Video Merger Bot")
+    BOT_USERNAME = os.environ.get("BOT_USERNAME", "video_merger_bot")
+    DEVELOPER = os.environ.get("DEVELOPER", "Your Name")
     
-    # ===================== EXTERNAL SERVICES =====================
+    # ==================== FORCE SUBSCRIBE SETTINGS ====================
+    # Picture for force subscribe message (optional)
+    FORCE_SUB_PIC = os.environ.get("FORCE_SUB_PIC", "")
+    VERIFY_PIC = os.environ.get("VERIFY_PIC", "")  # Enhanced verification pic
     
-    # GoFile Configuration
-    GOFILE_TOKEN = os.environ.get("GOFILE_TOKEN", "")
-    
-    # ===================== BOT MESSAGES =====================
-    
-    START_TEXT = """🎬 **Welcome to {bot_name}!**
-
-👋 **Hello {user}!** Welcome to the most advanced video merger bot!
-
-🚀 **What I can do:**
-• 🎬 Merge unlimited videos into one
-• 📱 Support all video formats (MP4, AVI, MKV, MOV, etc.)
-• 🔗 Download from URLs (YouTube, etc.)
-• ⚡ Lightning-fast processing with queue management
-• 🎯 Lossless quality output
-• 📊 Real-time progress tracking
-
-💡 **How to use:**
-1. **Send Videos:** Upload files or send URLs
-2. **Add to Queue:** Build your video collection  
-3. **Merge Now:** Combine them seamlessly
-4. **Download:** Get your merged masterpiece!
-
-⚡ **Ready to create amazing merged videos?**
-Use the buttons below to explore!
-
-🔧 **Developer:** {developer}
-
-*Professional Video Merging at Your Fingertips* ✨"""
-    
+    # Start picture (optional)  
     START_PIC = os.environ.get("START_PIC", "")
     
-    HELP_TEXT = """📖 **Complete User Guide**
+    # ==================== AUTHORIZED CHATS ====================
+    # List of authorized group/channel IDs (space separated)
+    AUTH_CHATS = os.environ.get("AUTH_CHATS", "")
+    
+    # ==================== WELCOME MESSAGES ====================
+    START_TEXT = os.environ.get("START_TEXT", """
+🎬 **Welcome to {bot_name}!**
 
-🎬 **Welcome to the most advanced video merger bot!**
+🚀 **Most Advanced Video Merger Bot**
 
-**🚀 Quick Start:**
-1. Join our required channel (if prompted)
-2. Use /merge command to begin
-3. Send your videos or URLs
-4. Click "Merge Now" when ready
-5. Choose download method
+✨ **Features:**
+• Merge multiple videos instantly
+• Support for direct links & file uploads  
+• High-quality output with all streams preserved
+• Professional UI with smart controls
+• Custom thumbnails support
 
-**📤 Supported Input:**
-• **Video Files:** MP4, AVI, MKV, MOV, WMV, FLV, WEBM, M4V
-• **Video URLs:** YouTube, Vimeo, Dailymotion, etc.
-• **File Size:** Up to 2GB per video
-• **Quantity:** Unlimited videos in queue
+📝 **How to Use:**
+1. Send videos or direct download links
+2. Click "Merge Now" when ready (minimum 2 videos)
+3. Choose upload destination (Telegram/GoFile)
+4. Set custom thumbnail and filename
+5. Get your merged file!
 
-**🎯 Merging Process:**
-• **Queue System:** Add multiple videos before merging
-• **Smart Processing:** Automatic quality optimization
-• **Progress Tracking:** Real-time status updates
-• **Quality Preservation:** Lossless merging when possible
+💫 **Developed by:** {developer}
 
-**📋 Available Commands:**
-• `/start` - Welcome & main menu
-• `/help` - This comprehensive guide
-• `/about` - Bot information & features
-• `/merge` - Start merging process
-• `/cancel` - Clear queue & cancel operation
-• `/stats` - Statistics (Admin only)
+🔥 **Ready to merge some videos?** Send me your first video!
+""")
 
-**🔒 Access Control:**
-• **Private Chat:** Owner and authorized users only
-• **Group Chat:** Authorized groups only
-• **Contact:** Message owner for access authorization
+# ==================== VALIDATION & CONVERSION ====================
 
-**⚡ Pro Tips for Best Results:**
-• Videos with identical resolution merge fastest
-• Use consistent frame rates for smooth playback
-• MP4 format recommended for best compatibility
-• Queue similar quality videos together
-• Large files may take longer to process
+def validate_config():
+    """Enhanced validation and conversion of configuration values"""
+    
+    # Check required variables
+    required_vars = ["API_ID", "API_HASH", "BOT_TOKEN"]
+    missing = []
+    
+    for var in required_vars:
+        if not getattr(Config, var):
+            missing.append(var)
+    
+    if missing:
+        raise ValueError(f"❌ Missing required environment variables: {', '.join(missing)}")
+    
+    # Convert string values to appropriate types
+    try:
+        # Convert API_ID to int
+        Config.API_ID = int(Config.API_ID)
+        
+        # Convert Owner ID
+        if Config.OWNER_ID:
+            Config.OWNER_ID = int(Config.OWNER_ID)
+        else:
+            raise ValueError("OWNER_ID is required!")
+        
+        # Convert Log Channels
+        if Config.LOG_CHANNEL:
+            Config.LOG_CHANNEL = int(Config.LOG_CHANNEL)
+            
+        if Config.ULOG_CHANNEL:
+            Config.ULOG_CHANNEL = int(Config.ULOG_CHANNEL)
+        elif Config.LOG_CHANNEL:
+            Config.ULOG_CHANNEL = Config.LOG_CHANNEL  # Fallback to main log
+        
+        if Config.MERGE_LOG_CHANNEL:
+            Config.MERGE_LOG_CHANNEL = int(Config.MERGE_LOG_CHANNEL)
+            
+        if Config.FLOG_CHANNEL:
+            Config.FLOG_CHANNEL = int(Config.FLOG_CHANNEL)
+        elif Config.MERGE_LOG_CHANNEL:
+            Config.FLOG_CHANNEL = Config.MERGE_LOG_CHANNEL  # Fallback to merge log
+        
+        # Parse ADMINS into list of ints
+        if Config.ADMINS:
+            Config.ADMINS = [int(x.strip()) for x in Config.ADMINS.split(",") if x.strip().isdigit()]
+        else:
+            Config.ADMINS = []
+        
+        # Always include owner in admins
+        if Config.OWNER_ID not in Config.ADMINS:
+            Config.ADMINS.append(Config.OWNER_ID)
+        
+        # Parse AUTH_CHATS 
+        if Config.AUTH_CHATS:
+            Config.AUTH_CHATS = [int(x.strip()) for x in Config.AUTH_CHATS.split(",") if x.strip().lstrip('-').isdigit()]
+        else:
+            Config.AUTH_CHATS = []
+            
+    except ValueError as e:
+        raise ValueError(f"❌ Configuration error: {e}")
+    
+    # Ensure download directory exists
+    if not os.path.isdir(Config.DOWNLOAD_DIR):
+        os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
+    
+    # Enhanced channel validation
+    channels = [
+        ("FORCE_SUB_CHANNEL", Config.FORCE_SUB_CHANNEL),
+        ("UPDATE_CHANNEL", Config.UPDATE_CHANNEL), 
+        ("SUPPORT_GROUP", Config.SUPPORT_GROUP)
+    ]
+    
+    for name, value in channels:
+        if value and not (value.startswith('@') or value.startswith('-100') or value.isdigit()):
+            print(f"⚠️ Warning: {name} should start with @ or be a channel ID")
 
-**🛠️ Troubleshooting:**
-• **Slow Processing:** Large files take time, be patient
-• **Format Issues:** Try converting to MP4 first
-• **Upload Failures:** Check file size and internet connection
-• **Access Denied:** Join authorized groups or contact owner
+# Run validation
+validate_config()
 
-**📞 Support:**
-Need help? Join our support group or contact the developer!
+# ==================== ENHANCED HELPER FUNCTIONS ====================
 
-**Made with ❤️ for seamless video merging**"""
+def get_log_channel(log_type: str = "general"):
+    """Get appropriate log channel based on type"""
+    if log_type == "user" and Config.ULOG_CHANNEL:
+        return Config.ULOG_CHANNEL
+    elif log_type == "merge" and Config.FLOG_CHANNEL:
+        return Config.FLOG_CHANNEL
+    elif log_type == "activity" and Config.MERGE_LOG_CHANNEL:
+        return Config.MERGE_LOG_CHANNEL
+    else:
+        return Config.LOG_CHANNEL
 
-    ABOUT_TEXT = """ℹ️ **About {bot_name}**
+def get_config_info():
+    """Get enhanced configuration summary for startup"""
+    return f"""
+🔧 **Enhanced Bot Configuration**
+├── 🤖 Bot: {Config.BOT_NAME} (@{Config.BOT_USERNAME})
+├── 👤 Owner: {Config.OWNER_ID}
+├── 👥 Admins: {len(Config.ADMINS)} user(s)
+├── 🔔 Force Subscribe: {"✅ Enabled" if Config.FORCE_SUB_CHANNEL else "❌ Disabled"}
+├── 📊 User Logging: {"✅ Enabled" if Config.ULOG_CHANNEL else "❌ Disabled"}
+├── 📁 Merge Logging: {"✅ Enabled" if Config.FLOG_CHANNEL else "❌ Disabled"}
+├── 💾 Database: {"✅ Connected" if Config.MONGO_URI else "❌ Not configured"}
+└── 📁 Download Dir: {Config.DOWNLOAD_DIR}
+"""
 
-🤖 **Bot Information:**
-• **Name:** {bot_name}
-• **Developer:** {developer}
-• **Version:** v2.0 Professional Edition
-• **Language:** Python 3.11+
-• **Framework:** Pyrogram (Advanced)
-• **Database:** MongoDB Atlas
+def is_admin(user_id: int) -> bool:
+    """Check if user is admin"""
+    return user_id in Config.ADMINS or user_id == Config.OWNER_ID
 
-**🌟 Advanced Features:**
+def is_owner(user_id: int) -> bool:
+    """Check if user is owner"""
+    return user_id == Config.OWNER_ID
 
-**Core Functionality:**
-• ✅ Multi-video merging with queue system
-• ✅ URL download support (YouTube, etc.)
-• ✅ Professional progress indicators
-• ✅ Lossless quality preservation
-• ✅ Multiple output format support
-• ✅ Smart error handling & recovery
+def is_auth_chat(chat_id: int) -> bool:
+    """Check if chat is authorized"""
+    return chat_id in Config.AUTH_CHATS
 
-**User Experience:**
-• ✅ Intuitive button-based interface
-• ✅ Real-time operation feedback
-• ✅ Advanced queue management
-• ✅ Custom filename support
-• ✅ Thumbnail generation
-• ✅ Comprehensive help system
+# ==================== EXPORT ====================
 
-**Administration:**
-• ✅ Force subscribe system
-• ✅ User authorization controls
-• ✅ Broadcasting system
-• ✅ Comprehensive logging
-• ✅ Statistics & analytics
-• ✅ Admin panel interface
-
-**Security & Performance:**
-• ✅ Group-based access control
-• ✅ User ban/unban system
-• ✅ Rate limiting protection
-• ✅ Error logging & monitoring
-• ✅ Automatic cleanup system
-• ✅ Optimized file handling
-
-**📊 Technical Specifications:**
-• **Processing:** FFmpeg with hardware acceleration
-• **Storage:** Cloud-based with auto-cleanup
-• **Upload Methods:** Telegram & GoFile.io
-• **Max File Size:** 2GB per video
-• **Supported Formats:** All major video formats
-• **Concurrent Users:** Unlimited with queuing
-
-**🔗 Important Links:**
-• **Updates:** {update_channel}
-• **Support:** {support_group}
-• **Developer:** Contact for business inquiries
-
-**📈 Usage Statistics:**
-This bot processes thousands of videos daily with 99.9% uptime and user satisfaction!
-
-**💝 Acknowledgments:**
-Special thanks to our community for feedback and support in making this the best video merger bot on Telegram!
-
-© 2024 - Crafted with passion by {developer}
-
-*Setting new standards in video merging technology* 🚀"""
-
-# Create config instance
+# Create singleton instance
 config = Config()
 
-# Validation
-if not config.API_ID or not config.API_HASH or not config.BOT_TOKEN:
-    raise ValueError("Missing required bot credentials in environment variables!")
-
-if not config.OWNER_ID:
-    raise ValueError("OWNER_ID is required in environment variables!")
-
-# Create download directory if it doesn't exist
-os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
-
-print(f"✅ Configuration loaded successfully!")
-print(f"🤖 Bot Name: {config.BOT_NAME}")
-print(f"👨‍💻 Developer: {config.DEVELOPER}")
-print(f"🆔 Owner ID: {config.OWNER_ID}")
-print(f"👥 Admins: {len(config.ADMINS)}")
-print(f"🔒 Authorized Users: {len(config.AUTHORIZED_USERS)}")
-print(f"💬 Authorized Chats: {len(config.AUTHORIZED_CHATS)}")
-print(f"📢 Force Sub Channel: {config.FORCE_SUB_CHANNEL}")
-print(f"📁 Download Directory: {config.DOWNLOAD_DIR}")
+# Export commonly used values
+API_ID = config.API_ID
+API_HASH = config.API_HASH
+BOT_TOKEN = config.BOT_TOKEN
+OWNER_ID = config.OWNER_ID
+ADMINS = config.ADMINS
+MONGO_URI = config.MONGO_URI
+DATABASE_NAME = config.DATABASE_NAME
+BOT_NAME = config.BOT_NAME
+DEVELOPER = config.DEVELOPER
+FORCE_SUB_CHANNEL = config.FORCE_SUB_CHANNEL
+LOG_CHANNEL = config.LOG_CHANNEL
+ULOG_CHANNEL = config.ULOG_CHANNEL
+MERGE_LOG_CHANNEL = config.MERGE_LOG_CHANNEL
+FLOG_CHANNEL = config.FLOG_CHANNEL
+DOWNLOAD_DIR = config.DOWNLOAD_DIR
