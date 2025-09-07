@@ -5,6 +5,7 @@ pymongo==4.6.0
 aiohttp==3.9.1
 aiofiles==23.2.0
 ffmpeg-python
+humanize==4.8.0
 requests
 uvloop>=0.17.0; sys_platform != "win32"
 charset-normalizer>=3.0.0
