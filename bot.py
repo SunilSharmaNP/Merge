@@ -584,17 +584,5 @@ async def shutdown():
     print("✅ Bot shutdown complete!")
 
 if __name__ == "__main__":
-    app.run(startup(), shutdown())
-    async def main():
-        await startup()
-        try:
-            await app.start()
-            print("✅ Bot is now running! Press Ctrl+C to stop.")
-            await asyncio.Event().wait()
-        except KeyboardInterrupt:
-            print("🛑 Bot stopped by user")
-        finally:
-            await shutdown()
-            await app.stop()
+    app.run()
     
-    asyncio.run(main())
