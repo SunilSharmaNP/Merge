@@ -102,21 +102,42 @@ async def start_handler(client: Client, message: Message):
 
             chat_info = await client.get_chat(channel)
 
-            # Get invite link
+            # Get invite link with better error handling
+            invite_link = None
             try:
                 invite_link = await client.export_chat_invite_link(chat_info.id)
-            except:
+                logger.info(f"Generated invite link: {invite_link}")
+            except Exception as e:
+                logger.warning(f"Could not export invite link: {e}")
+                
+                # Fallback to public link generation
                 if chat_info.username:
-                    invite_link = f"https://t.me/{chat_info.username}"
+                    # Clean username (remove @ if present)
+                    username = chat_info.username.lstrip('@')
+                    invite_link = f"https://t.me/{username}"
                 else:
+                    # For private channels, try alternative format
                     chat_id_str = str(chat_info.id)
                     if chat_id_str.startswith('-100'):
-                        invite_link = f"https://t.me/c/{chat_id_str[4:]}"
+                        invite_link = f"https://t.me/c/{chat_id_str[4:]}/1"
                     else:
-                        invite_link = f"https://t.me/c/{chat_id_str}"
+                        invite_link = f"https://t.me/c/{chat_id_str.lstrip('-')}/1"
+                        
         except Exception as e:
             logger.error(f"Error getting channel info: {e}")
-            invite_link = f"https://t.me/{config.FORCE_SUB_CHANNEL}"
+            # Last fallback - try to construct from config
+            channel_ref = str(config.FORCE_SUB_CHANNEL)
+            if channel_ref.startswith('@'):
+                invite_link = f"https://t.me/{channel_ref[1:]}"
+            elif channel_ref.startswith('https://'):
+                invite_link = channel_ref
+            else:
+                invite_link = f"https://t.me/{channel_ref}"
+                
+        # Validate the invite link before using
+        if not invite_link or not invite_link.startswith('https://t.me/'):
+            logger.error(f"Invalid invite link generated: {invite_link}")
+            invite_link = "https://t.me/telegram"  # Default fallback
 
         await message.reply_text(
             "🔔 **Please join our channel first to use this bot!**\n\n"
@@ -132,11 +153,15 @@ async def start_handler(client: Client, message: Message):
     # Now process the start command
     user_name = message.from_user.first_name or str(user_id)
     await db.add_user(user_id, user_name, message.from_user.username)
-    await send_log_message(
-        client,
-        f"👤 New user started the bot: {user_name} (`{user_id}`)",
-        log_type="new_user"
-    )
+    # Send log message with error handling
+    try:
+        await send_log_message(
+            client,
+            f"👤 New user started the bot: {user_name} (`{user_id}`)",
+            log_type="new_user"
+        )
+    except Exception as e:
+        logger.warning(f"Could not send new user log: {e}")
 
     # Show different messages based on chat type and authorization
     if message.chat.type == "private":
