@@ -34,7 +34,7 @@ async def force_subscribe_check(client: Client, user_id: int) -> bool:
         return True
 
 async def send_log_message(client: Client, message: str, log_type: str = "general"):
-    """Send a log message to the configured log channel."""
+    """Send a log message to the configured log channel with improved error handling."""
     target = {
         "new_user": config.NEW_USER_LOG_CHANNEL,
         "merged_file": config.MERGED_FILE_LOG_CHANNEL
@@ -47,14 +47,36 @@ async def send_log_message(client: Client, message: str, log_type: str = "genera
     try:
         # Handle both integer IDs and string usernames
         if isinstance(target, int):
-            # Convert to string if it's an integer ID
             target = str(target)
-
+        elif isinstance(target, str):
+            target = target.strip()
+            
+        # Validate target before sending
+        if not target:
+            logger.debug(f"Empty log channel for {log_type}")
+            return
+            
+        # Try to get chat info first to validate
+        try:
+            await client.get_chat(target)
+        except Exception as validation_error:
+            logger.error(f"Cannot access log channel {target}: {validation_error}")
+            return
+            
+        # Send the message
         await client.send_message(target, message)
-    except (PeerIdInvalid, ChannelInvalid) as e:
-        logger.error(f"Invalid log channel: {target}, Error: {e}")
+        logger.debug(f"Log message sent to {target}")
+        
     except Exception as e:
-        logger.error(f"Error sending log message: {e}")
+        logger.error(f"Invalid log channel: {target}, Error: {e}")
+        # Disable this channel to avoid repeated errors
+        if log_type == "new_user":
+            config.NEW_USER_LOG_CHANNEL = None
+        elif log_type == "merged_file": 
+            config.MERGED_FILE_LOG_CHANNEL = None
+        else:
+            config.LOG_CHANNEL = None
+        logger.warning(f"Disabled invalid log channel for {log_type}")
 
 async def is_user_member(client: Client, user_id: int, chat_id: int) -> bool:
     """Check if user is member of a chat"""
