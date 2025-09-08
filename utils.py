@@ -1,15 +1,15 @@
-# utils.py (Modified with asynchronous, non-blocking functions)
+# utils.py - FIXED VERSION with Proper Async Functions
 import time
 import math
-import asyncio # Import asyncio for asynchronous processes
-import json # Import json for parsing ffprobe output
+import asyncio
+import json
 import os
 import re
 import shutil
 import humanize
 
 def get_human_readable_size(size_in_bytes: int) -> str:
-    """Formats size in bytes to a human-readable string (KB, MB, GB). (This function was fine, no changes needed)"""
+    """Formats size in bytes to a human-readable string (KB, MB, GB)."""
     if size_in_bytes is None:
         return "0B"
     power = 1024
@@ -21,12 +21,12 @@ def get_human_readable_size(size_in_bytes: int) -> str:
     return f"{size_in_bytes:.2f} {power_labels[n]}B"
 
 def get_progress_bar(progress: float, length: int = 20) -> str:
-    """Creates a textual progress bar. (This function was fine, no changes needed)"""
+    """Creates a textual progress bar."""
     filled_len = int(length * progress)
     return '█' * filled_len + '░' * (length - filled_len)
 
 def get_time_left(elapsed_time: float, progress: float) -> str:
-    """Estimates the time remaining for the process. (This function was fine, no changes needed)"""
+    """Estimates the time remaining for the process."""
     if progress == 0:
         return "N/A"
     seconds = (elapsed_time / progress) - elapsed_time
@@ -38,17 +38,12 @@ def get_time_left(elapsed_time: float, progress: float) -> str:
         return f"{minutes}m {seconds}s"
     return f"{seconds}s"
 
-# --- MODIFIED ASYNC VIDEO FUNCTIONS ---
-
-async def get_video_properties(video_path: str) -> dict | None:
-    """
-    Gets video properties (duration, width, height) using ffprobe asynchronously.
-    Uses JSON output for reliability and avoids blocking the bot.
-    """
+async def get_video_properties(video_path: str) -> dict:
+    """Gets video properties (duration, width, height) using ffprobe asynchronously."""
     if not os.path.exists(video_path):
         print(f"Video file not found: {video_path}")
         return None
-        
+
     command = [
         "ffprobe",
         "-v", "quiet",
@@ -57,26 +52,26 @@ async def get_video_properties(video_path: str) -> dict | None:
         "-show_streams",
         video_path,
     ]
-    
-    # Run the command asynchronously
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await process.communicate()
 
-    if process.returncode != 0:
-        print(f"Error getting video properties for '{video_path}': {stderr.decode().strip()}")
-        return None
-        
     try:
+        # Run the command asynchronously
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            print(f"Error getting video properties for '{video_path}': {stderr.decode().strip()}")
+            return None
+
         # Parse the JSON output
         data = json.loads(stdout)
-        
+
         # Find the first video stream
         video_stream = next((s for s in data["streams"] if s["codec_type"] == "video"), None)
-        
+
         if not video_stream:
             print(f"No video stream found in '{video_path}'")
             return None
@@ -93,11 +88,8 @@ async def get_video_properties(video_path: str) -> dict | None:
         print(f"Failed to parse ffprobe output for '{video_path}': {e}")
         return None
 
-async def create_thumbnail(video_path: str, thumbnail_path: str) -> str | None:
-    """
-    Creates a thumbnail asynchronously from the middle of the video.
-    Returns the path to the thumbnail or None on failure.
-    """
+async def create_thumbnail(video_path: str, thumbnail_path: str) -> str:
+    """Creates a thumbnail asynchronously from the middle of the video."""
     # First, get the video's duration reliably
     properties = await get_video_properties(video_path)
     if not properties or not properties["duration"]:
@@ -107,30 +99,33 @@ async def create_thumbnail(video_path: str, thumbnail_path: str) -> str | None:
     duration = properties["duration"]
     # Seek to the middle of the video for a safe thumbnail
     thumbnail_time = duration / 2
-    
+
     command = [
         'ffmpeg', '-hide_banner', '-loglevel', 'error',
-        '-i', video_path, 
-        '-ss', str(thumbnail_time), 
-        '-vframes', '1', 
-        '-c:v', 'mjpeg', '-f', 'image2', 
+        '-i', video_path,
+        '-ss', str(thumbnail_time),
+        '-vframes', '1',
+        '-c:v', 'mjpeg', '-f', 'image2',
         '-y', thumbnail_path
     ]
 
-    process = await asyncio.create_subprocess_exec(
-        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await process.communicate()
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
 
-    if process.returncode != 0:
-        print(f"Error creating thumbnail: {stderr.decode().strip()}")
+        if process.returncode != 0:
+            print(f"Error creating thumbnail: {stderr.decode().strip()}")
+            return None
+
+        return thumbnail_path if os.path.exists(thumbnail_path) else None
+    except Exception as e:
+        print(f"Exception creating thumbnail: {e}")
         return None
 
-    return thumbnail_path if os.path.exists(thumbnail_path) else None
-
-
 def cleanup_files(*files_or_dirs):
-    """Safely removes files and directories. (This function was fine, no changes needed)"""
+    """Safely removes files and directories."""
     for item in files_or_dirs:
         try:
             if os.path.isdir(item):
@@ -141,6 +136,5 @@ def cleanup_files(*files_or_dirs):
             print(f"Error cleaning up {item}: {e}")
 
 def is_valid_url(url: str) -> bool:
-    """A simple check to see if a string looks like a URL. (This function was fine, no changes needed)"""
-    # Your regex was slightly strict, this one is a bit more general for http/https links
+    """A simple check to see if a string looks like a URL."""
     return re.match(r'^https?:\/\/.+$', url) is not None
