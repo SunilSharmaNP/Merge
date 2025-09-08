@@ -1,4 +1,4 @@
-# uploader.py - ENHANCED with complete merged file logging for both TG and GoFile
+# uploader.py - Enhanced with Professional Progress Bars
 import os
 import time
 import asyncio
@@ -6,57 +6,55 @@ from aiohttp import ClientSession, FormData, ClientTimeout
 from random import choice
 from config import config
 from utils import get_human_readable_size, get_progress_bar, get_video_properties
-import logging
-from helpers import send_log_message
-from database import db
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
+from tenacity import retry, stop_after_attempt, wait_exponential, \
+    retry_if_exception_type, RetryError
 
 # Global variables for progress throttling
 last_edit_time = {}
-EDIT_THROTTLE_SECONDS = 2.0
+EDIT_THROTTLE_SECONDS = 3.0
 
-# Configuration
-GOFILE_CHUNK_SIZE = 5 * 1024 * 1024  # 5MB chunks
-GOFILE_UPLOAD_TIMEOUT = 1800  # 30 minutes
-MAX_RETRIES = 3
+# Configuration for Uploader
+GOFILE_CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB chunks
+GOFILE_UPLOAD_TIMEOUT = 3600  # 1 hour timeout
+GOFILE_RETRY_ATTEMPTS = 5
+GOFILE_RETRY_WAIT_MIN = 1
+GOFILE_RETRY_WAIT_MAX = 60
 
 async def smart_progress_editor(status_message, text: str):
-    """Smart progress editor with throttling"""
+    """Smart progress editor with throttling to avoid flood limits."""
     if not status_message or not hasattr(status_message, 'chat'):
         return
-    
+
     message_key = f"{status_message.chat.id}_{status_message.id}"
     now = time.time()
     last_time = last_edit_time.get(message_key, 0)
-    
+
     if (now - last_time) > EDIT_THROTTLE_SECONDS:
         try:
             await status_message.edit_text(text)
             last_edit_time[message_key] = now
-        except Exception:
+        except Exception as e:
             pass
 
 def get_time_left(start_time: float, current: int, total: int) -> str:
-    """Calculate estimated time remaining"""
+    """Calculate estimated time remaining."""
     if current <= 0 or (time.time() - start_time) <= 0:
         return "Calculating..."
-    
+
     elapsed = time.time() - start_time
-    if elapsed < 0.1: 
+    if elapsed < 0.1:
         return "Calculating..."
-        
+
     rate = current / elapsed
     if rate == 0:
         return "Calculating..."
-    
+
     remaining_bytes = total - current
     if remaining_bytes <= 0:
-        return "Complete"
-        
+        return "0s"
+
     remaining = remaining_bytes / rate
-    
+
     if remaining < 60:
         return f"{int(remaining)}s"
     elif remaining < 3600:
@@ -67,11 +65,11 @@ def get_time_left(start_time: float, current: int, total: int) -> str:
         return f"{hours}h {minutes}m"
 
 def get_speed(start_time: float, current: int) -> str:
-    """Calculate upload speed"""
+    """Calculate upload/download speed."""
     elapsed = time.time() - start_time
     if elapsed <= 0:
         return "0 B/s"
-    
+
     speed = current / elapsed
     if speed < 1024:
         return f"{speed:.1f} B/s"
@@ -80,15 +78,16 @@ def get_speed(start_time: float, current: int) -> str:
     else:
         return f"{speed / (1024 * 1024):.1f} MB/s"
 
-async def create_default_thumbnail(video_path: str) -> str:
-    """Create a default thumbnail from video"""
+async def create_default_thumbnail(video_path: str):
+    """Create a default thumbnail from video."""
     thumbnail_path = f"{os.path.splitext(video_path)[0]}.jpg"
-    
+
     try:
         metadata = await get_video_properties(video_path)
         if not metadata or not metadata.get("duration"):
+            print(f"Could not get duration for '{video_path}'. Skipping default thumbnail.")
             return None
-        
+
         # Generate thumbnail from middle of video
         thumbnail_time = metadata["duration"] / 2
         command = [
@@ -99,261 +98,102 @@ async def create_default_thumbnail(video_path: str) -> str:
             '-c:v', 'mjpeg', '-f', 'image2',
             '-y', thumbnail_path
         ]
-        
+
         process = await asyncio.create_subprocess_exec(
-            *command, 
+            *command,
             stderr=asyncio.subprocess.PIPE
         )
-        await process.communicate()
-        
-        if process.returncode == 0 and os.path.exists(thumbnail_path):
-            return thumbnail_path
-        
+        _, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            print(f"Error creating default thumbnail: {stderr.decode().strip()}")
+            return None
+
+        return thumbnail_path if os.path.exists(thumbnail_path) else None
+
     except Exception as e:
-        logger.error(f"Error creating thumbnail: {e}")
-    
-    return None
-
-async def upload_to_telegram(client, chat_id: int, video_path: str, custom_filename: str = None, thumbnail_path: str = None, status_message = None):
-    """Enhanced Telegram upload with comprehensive merged file logging"""
-    try:
-        if not os.path.exists(video_path):
-            if status_message:
-                await status_message.edit_text("❌ **Video file not found!**")
-            return False
-        
-        file_size = os.path.getsize(video_path)
-        filename = custom_filename or os.path.splitext(os.path.basename(video_path))[0]
-        final_filename = f"{filename}.mp4"
-        
-        # Check Telegram file size limit (2GB)
-        if file_size > 2000000000:  # 2GB
-            if status_message:
-                await status_message.edit_text(
-                    f"❌ **File too large for Telegram!**\n\n"
-                    f"📊 **Size:** `{get_human_readable_size(file_size)}`\n"
-                    f"📏 **Limit:** `2GB`\n\n"
-                    f"💡 **Use GoFile for large files**"
-                )
-            return False
-        
-        # Create thumbnail if not provided
-        if not thumbnail_path:
-            thumbnail_path = await create_default_thumbnail(video_path)
-        
-        # Get video metadata
-        metadata = await get_video_properties(video_path)
-        duration = int(metadata.get("duration", 0)) if metadata else 0
-        resolution = f"{metadata.get('width', 0)}x{metadata.get('height', 0)}" if metadata else "Unknown"
-        
-        # Start upload
-        if status_message:
-            await smart_progress_editor(
-                status_message,
-                f"📤 **Starting Telegram upload...**\n\n"
-                f"📁 **File:** `{final_filename}`\n"
-                f"📊 **Size:** `{get_human_readable_size(file_size)}`"
-            )
-        
-        start_time = time.time()
-        
-        # Progress callback
-        async def progress_callback(current, total):
-            if not status_message:
-                return
-                
-            progress = current / total
-            speed = get_speed(start_time, current)
-            eta = get_time_left(start_time, current, total)
-            
-            progress_text = f"""📤 **Uploading to Telegram...**
-
-📁 **File:** `{final_filename}`
-📊 **Total Size:** `{get_human_readable_size(total)}`
-
-{get_progress_bar(progress)} `{progress:.1%}`
-
-📈 **Uploaded:** `{get_human_readable_size(current)}`
-🚀 **Speed:** `{speed}`
-⏱ **ETA:** `{eta}`"""
-            
-            await smart_progress_editor(status_message, progress_text)
-        
-        # Upload video
-        message = await client.send_video(
-            chat_id=chat_id,
-            video=video_path,
-            thumb=thumbnail_path,
-            duration=duration,
-            caption=f"✅ **Merged Video Ready!**\n\n"
-                   f"📁 **File:** `{final_filename}`\n"
-                   f"📊 **Size:** `{get_human_readable_size(file_size)}`\n"
-                   f"⏱ **Duration:** `{duration}s`\n"
-                   f"🎯 **Resolution:** `{resolution}`\n\n"
-                   f"🎬 **Merged successfully by {config.BOT_NAME}**",
-            progress=progress_callback
-        )
-        
-        # Calculate upload time
-        elapsed_time = time.time() - start_time
-        
-        # Final success message
-        if status_message:
-            await smart_progress_editor(
-                status_message,
-                f"✅ **Telegram Upload Complete!**\n\n"
-                f"📁 **File:** `{final_filename}`\n"
-                f"📊 **Size:** `{get_human_readable_size(file_size)}`\n"
-                f"⏱ **Upload Time:** `{int(elapsed_time)}s`\n"
-                f"🚀 **Avg Speed:** `{get_speed(start_time, file_size)}`\n\n"
-                f"🎬 **Video uploaded successfully!**"
-            )
-        
-        # Get user info for logging
-        try:
-            user_info = await client.get_chat(chat_id)
-            if hasattr(user_info, 'first_name'):
-                user_name = user_info.first_name or "Unknown User"
-                user_id = user_info.id
-            else:
-                user_name = "Unknown User"
-                user_id = chat_id
-        except:
-            user_name = "Unknown User"
-            user_id = chat_id
-        
-        # Log to database
-        await db.log_file_activity(
-            user_id=user_id,
-            file_name=final_filename,
-            file_size=file_size,
-            upload_type="telegram_upload",
-            file_url=None
-        )
-        
-        # Send merged file log to FLOG channel
-        await send_log_message(
-            client, "merge_activity",
-            f"📤 **Merged File Uploaded to Telegram**\n\n"
-            f"👤 **User:** {user_name} (`{user_id}`)\n"
-            f"📁 **Filename:** `{final_filename}`\n"
-            f"📊 **File Size:** `{get_human_readable_size(file_size)}`\n"
-            f"⏱ **Duration:** `{duration}s`\n"
-            f"🎯 **Resolution:** `{resolution}`\n"
-            f"🚀 **Upload Speed:** `{get_speed(start_time, file_size)}`\n"
-            f"⏰ **Upload Time:** `{int(elapsed_time)}s`\n"
-            f"📅 **Date:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n"
-            f"📊 **Platform:** Telegram"
-        )
-        
-        # Send copy to FLOG channel if configured and different from current chat
-        if hasattr(config, 'FLOG_CHANNEL') and config.FLOG_CHANNEL and str(config.FLOG_CHANNEL) != str(chat_id):
-            try:
-                await client.send_video(
-                    chat_id=config.FLOG_CHANNEL,
-                    video=video_path,
-                    thumb=thumbnail_path,
-                    duration=duration,
-                    caption=f"🎬 **Merged Video Log - Telegram**\n\n"
-                           f"👤 **User:** {user_name} (`{user_id}`)\n"
-                           f"📁 **File:** `{final_filename}`\n"
-                           f"📊 **Size:** `{get_human_readable_size(file_size)}`\n"
-                           f"⏱ **Duration:** `{duration}s`\n"
-                           f"🎯 **Resolution:** `{resolution}`\n"
-                           f"📅 **Time:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                           f"📊 **Platform:** Telegram"
-                )
-                logger.info(f"Merged file logged to FLOG channel: {final_filename}")
-            except Exception as e:
-                logger.error(f"Failed to send to FLOG channel: {e}")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Telegram upload error: {e}")
-        if status_message:
-            await smart_progress_editor(
-                status_message,
-                f"❌ **Telegram Upload Failed!**\n\n"
-                f"🚨 **Error:** `{str(e)}`\n\n"
-                f"💡 **Try GoFile upload instead**"
-            )
-        return False
+        print(f"Exception creating thumbnail for '{video_path}': {e}")
+        return None
 
 class GofileUploader:
-    """Enhanced GoFile uploader with comprehensive merged file logging"""
-    
+    """Enhanced GoFile uploader with real-time progress tracking and retries."""
+
     def __init__(self, token=None):
         self.api_url = "https://api.gofile.io/"
         self.token = token or getattr(config, 'GOFILE_TOKEN', None)
+        if not self.token:
+            print("Warning: GOFILE_TOKEN not found in config. GoFile uploads might be anonymous.")
         self.chunk_size = GOFILE_CHUNK_SIZE
         self.session = None
 
     async def _get_session(self):
-        """Get or create aiohttp session"""
+        """Get or create an aiohttp ClientSession."""
         if self.session is None or self.session.closed:
             self.session = ClientSession(
                 timeout=ClientTimeout(total=GOFILE_UPLOAD_TIMEOUT)
             )
         return self.session
-    
+
     async def close(self):
-        """Close session"""
+        """Close the aiohttp ClientSession."""
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
 
+    @retry(
+        stop=stop_after_attempt(GOFILE_RETRY_ATTEMPTS),
+        wait=wait_exponential(multiplier=1, min=GOFILE_RETRY_WAIT_MIN, max=GOFILE_RETRY_WAIT_MAX),
+        retry=retry_if_exception_type(Exception),
+        reraise=True
+    )
     async def __get_server(self):
-        """Get best GoFile server"""
+        """Get the best GoFile server for uploading with retries."""
+        print("Attempting to get GoFile server...")
         session = await self._get_session()
         async with session.get(f"{self.api_url}servers") as resp:
             resp.raise_for_status()
             result = await resp.json()
-            
+
             if result.get("status") == "ok":
                 servers = result["data"]["servers"]
                 selected_server = choice(servers)["name"]
-                logger.info(f"Selected GoFile server: {selected_server}")
+                print(f"Selected GoFile server: {selected_server}")
                 return selected_server
             else:
-                raise Exception(f"GoFile API error: {result.get('message', 'Unknown error')}")
+                raise Exception(f"GoFile API error getting server: {result.get('message', 'Unknown error')}")
 
-    async def upload_file(self, client, user_id: int, file_path: str, custom_filename: str = None, status_message=None):
-        """Enhanced GoFile upload with comprehensive merged file logging"""
+    async def upload_file(self, file_path: str, status_message=None):
+        """Upload file to GoFile with real-time progress tracking and retries."""
         if not os.path.isfile(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-        
+
         file_size = os.path.getsize(file_path)
-        filename = custom_filename or os.path.splitext(os.path.basename(file_path))[0]
-        final_filename = f"{filename}.mp4"
-        
+        filename = os.path.basename(file_path)
+
         if file_size > (10 * 1024 * 1024 * 1024):  # 10GB limit
-            raise ValueError(f"File size {get_human_readable_size(file_size)} exceeds GoFile limit (10GB)")
+            raise ValueError(f"File size {get_human_readable_size(file_size)} exceeds GoFile limit (10GB).")
 
         # Get upload server
-        if status_message:
-            await smart_progress_editor(status_message, "🔗 **Connecting to GoFile servers...**")
-        
         try:
+            if status_message:
+                await smart_progress_editor(status_message, "🔗 **Connecting to GoFile servers...**")
             server = await self.__get_server()
             upload_url = f"https://{server}.gofile.io/uploadFile"
-        except Exception as e:
-            error_msg = f"Failed to get GoFile server: {e}"
-            logger.error(error_msg)
+        except RetryError as e:
+            error_msg = f"Failed to get GoFile server: {e.last_attempt.exception()}"
             if status_message:
                 await status_message.edit_text(f"❌ **GoFile Upload Failed!**\n\n🚨 **Error:** `{error_msg}`")
-            raise Exception(error_msg)
-        
+            raise Exception(error_msg) from e
+
         if status_message:
             await smart_progress_editor(
-                status_message, 
-                f"🚀 **Starting GoFile Upload...**\n\n"
-                f"📁 **File:** `{final_filename}`\n"
-                f"📊 **Size:** `{get_human_readable_size(file_size)}`"
+                status_message,
+                f"🚀 **Starting GoFile Upload...**\n\n📁 **File:** `{filename}`\n📊 **Size:** `{get_human_readable_size(file_size)}`"
             )
-        
+
         start_time = time.time()
-        
+        uploaded_bytes = 0
+
         try:
             session = await self._get_session()
             
@@ -361,163 +201,120 @@ class GofileUploader:
             form = FormData()
             if self.token:
                 form.add_field("token", self.token)
-            
-            # Track upload progress
-            uploaded = 0
-            
-            # Custom file reader with progress
-            async def track_upload_progress():
-                nonlocal uploaded
-                with open(file_path, "rb") as f:
-                    while True:
-                        chunk = f.read(self.chunk_size)
-                        if not chunk:
-                            break
-                        uploaded += len(chunk)
-                        
-                        if status_message:
-                            progress = uploaded / file_size
-                            speed = get_speed(start_time, uploaded)
-                            eta = get_time_left(start_time, uploaded, file_size)
-                            
-                            progress_text = f"""🔗 **Uploading to GoFile...**
 
-📁 **File:** `{final_filename}`
-📊 **Total Size:** `{get_human_readable_size(file_size)}`
+            # Add file field
+            with open(file_path, 'rb') as f:
+                form.add_field("file", f, filename=filename, content_type="application/octet-stream")
 
-{get_progress_bar(progress)} `{progress:.1%}`
-
-📈 **Uploaded:** `{get_human_readable_size(uploaded)}`
-🚀 **Speed:** `{speed}`
-⏱ **ETA:** `{eta}`"""
-                            
-                            await smart_progress_editor(status_message, progress_text)
-                        
-                        yield chunk
-            
-            # Add file to form
-            form.add_field("file", track_upload_progress(), filename=final_filename)
-            
-            # Upload file
+            # Upload with progress tracking
             async with session.post(upload_url, data=form) as resp:
                 resp.raise_for_status()
-                result = await resp.json()
-            
-            if result.get("status") != "ok":
-                raise Exception(f"GoFile upload failed: {result.get('message', 'Unknown error')}")
-            
-            file_data = result["data"]
-            download_url = file_data["downloadPage"]
-            file_id = file_data["fileId"]
-            
-            # Calculate upload time
-            elapsed_time = time.time() - start_time
-            
-            # Get user info for logging
-            try:
-                user_info = await client.get_chat(user_id)
-                if hasattr(user_info, 'first_name'):
-                    user_name = user_info.first_name or "Unknown User"
-                else:
-                    user_name = "Unknown User"
-            except:
-                user_name = "Unknown User"
-            
-            # Get video metadata for logging
-            metadata = await get_video_properties(file_path)
-            duration = int(metadata.get("duration", 0)) if metadata else 0
-            resolution = f"{metadata.get('width', 0)}x{metadata.get('height', 0)}" if metadata else "Unknown"
-            
-            # Log to database
-            await db.log_file_activity(
-                user_id=user_id,
-                file_name=final_filename,
-                file_size=file_size,
-                upload_type="gofile_upload",
-                file_url=download_url
-            )
-            
-            # Send merged file log to FLOG channel
-            await send_log_message(
-                client, "merge_activity",
-                f"🔗 **Merged File Uploaded to GoFile**\n\n"
-                f"👤 **User:** {user_name} (`{user_id}`)\n"
-                f"📁 **Filename:** `{final_filename}`\n"
-                f"📊 **File Size:** `{get_human_readable_size(file_size)}`\n"
-                f"⏱ **Duration:** `{duration}s`\n"
-                f"🎯 **Resolution:** `{resolution}`\n"
-                f"🚀 **Upload Speed:** `{get_speed(start_time, file_size)}`\n"
-                f"⏰ **Upload Time:** `{int(elapsed_time)}s`\n"
-                f"🔗 **Download URL:** {download_url}\n"
-                f"📅 **Date:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                f"📊 **Platform:** GoFile\n"
-                f"🆔 **File ID:** `{file_id}`"
-            )
-            
-            # Send text log to FLOG channel if configured
-            if hasattr(config, 'FLOG_CHANNEL') and config.FLOG_CHANNEL:
-                try:
-                    await client.send_message(
-                        chat_id=config.FLOG_CHANNEL,
-                        text=f"🔗 **Merged Video Log - GoFile**\n\n"
-                             f"👤 **User:** {user_name} (`{user_id}`)\n"
-                             f"📁 **File:** `{final_filename}`\n"
-                             f"📊 **Size:** `{get_human_readable_size(file_size)}`\n"
-                             f"⏱ **Duration:** `{duration}s`\n"
-                             f"🎯 **Resolution:** `{resolution}`\n"
-                             f"🔗 **URL:** {download_url}\n"
-                             f"📅 **Time:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                             f"📊 **Platform:** GoFile\n"
-                             f"🆔 **File ID:** `{file_id}`"
+                resp_json = await resp.json()
+
+            if resp_json.get("status") == "ok":
+                download_page = resp_json["data"]["downloadPage"]
+
+                if status_message:
+                    elapsed_time = time.time() - start_time
+                    await status_message.edit_text(
+                        f"✅ **GoFile Upload Complete!**\n\n"
+                        f"📁 **File:** `{filename}`\n"
+                        f"📊 **Size:** `{get_human_readable_size(file_size)}`\n"
+                        f"⏱ **Time:** `{elapsed_time:.1f}s`\n"
+                        f"🔗 **Link:** {download_page}\n\n"
+                        f"💡 **Note:** Links expire after 10 days of inactivity."
                     )
-                    logger.info(f"Merged file logged to FLOG channel: {final_filename}")
-                except Exception as e:
-                    logger.error(f"Failed to send to FLOG channel: {e}")
-            
-            # Final success message
-            if status_message:
-                await smart_progress_editor(
-                    status_message,
-                    f"✅ **GoFile Upload Complete!**\n\n"
-                    f"📁 **File:** `{final_filename}`\n"
-                    f"📊 **Size:** `{get_human_readable_size(file_size)}`\n"
-                    f"⏱ **Upload Time:** `{int(elapsed_time)}s`\n"
-                    f"🚀 **Avg Speed:** `{get_speed(start_time, file_size)}`\n"
-                    f"🔗 **Download:** [Click Here]({download_url})\n\n"
-                    f"🎬 **File uploaded successfully!**"
-                )
-            
-            return {
-                "success": True,
-                "download_url": download_url,
-                "file_id": file_id,
-                "upload_time": elapsed_time,
-                "file_size": file_size
-            }
-            
+
+                return download_page
+            else:
+                error_msg = resp_json.get("message", "Unknown error")
+                raise Exception(f"GoFile upload failed: {error_msg}")
+
         except Exception as e:
-            logger.error(f"GoFile upload error: {e}")
             if status_message:
-                await smart_progress_editor(
-                    status_message,
+                await status_message.edit_text(
                     f"❌ **GoFile Upload Failed!**\n\n"
-                    f"🚨 **Error:** `{str(e)}`\n\n"
-                    f"💡 **Try Telegram upload instead**"
+                    f"📁 **File:** `{filename}`\n"
+                    f"🚨 **Error:** `{str(e)}`"
                 )
             raise e
-        
         finally:
             await self.close()
 
-# Global uploader instance
-gofile_uploader = GofileUploader()
+async def upload_to_telegram(client, chat_id: int, file_path: str, status_message, caption: str = None, custom_thumbnail: str = None):
+    """Upload video file to Telegram with progress tracking."""
+    try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
 
-# Convenience functions
-async def upload_to_gofile(client, user_id: int, file_path: str, custom_filename: str = None, status_message=None):
-    """Convenience function for GoFile upload"""
-    return await gofile_uploader.upload_file(client, user_id, file_path, custom_filename, status_message)
+        file_size = os.path.getsize(file_path)
+        filename = os.path.basename(file_path)
 
-# Enhanced helper function
-def format_file_size(size_bytes: int) -> str:
-    """Format file size in human readable format"""
-    return get_human_readable_size(size_bytes)
+        # Create thumbnail if not provided
+        thumbnail_path = custom_thumbnail
+        if not thumbnail_path:
+            thumbnail_path = await create_default_thumbnail(file_path)
+
+        if status_message:
+            await smart_progress_editor(
+                status_message,
+                f"📤 **Uploading to Telegram...**\n\n"
+                f"📁 **File:** `{filename}`\n"
+                f"📊 **Size:** `{get_human_readable_size(file_size)}`"
+            )
+
+        # Progress callback for upload
+        def progress_callback(current, total):
+            if status_message:
+                progress_percent = current / total
+                progress_text = f"""
+📤 **Uploading to Telegram...**
+📁 **File:** `{filename}`
+📊 **Total Size:** `{get_human_readable_size(total)}`
+{get_progress_bar(progress_percent)} `{progress_percent:.1%}`
+📈 **Uploaded:** `{get_human_readable_size(current)}`
+📡 **Status:** {'Complete!' if current >= total else 'Uploading...'}
+"""
+                asyncio.create_task(smart_progress_editor(status_message, progress_text.strip()))
+
+        # Upload as video
+        if file_path.lower().endswith(('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm')):
+            # Get video properties for metadata
+            video_props = await get_video_properties(file_path)
+            duration = video_props.get('duration', 0) if video_props else 0
+            width = video_props.get('width', 0) if video_props else 0
+            height = video_props.get('height', 0) if video_props else 0
+
+            message = await client.send_video(
+                chat_id=chat_id,
+                video=file_path,
+                caption=caption,
+                duration=duration,
+                width=width,
+                height=height,
+                thumb=thumbnail_path,
+                progress=progress_callback
+            )
+        else:
+            # Upload as document
+            message = await client.send_document(
+                chat_id=chat_id,
+                document=file_path,
+                caption=caption,
+                thumb=thumbnail_path,
+                progress=progress_callback
+            )
+
+        # Cleanup thumbnail if we created it
+        if thumbnail_path and thumbnail_path != custom_thumbnail:
+            try:
+                os.remove(thumbnail_path)
+            except:
+                pass
+
+        return message
+
+    except Exception as e:
+        if status_message:
+            await status_message.edit_text(f"❌ **Telegram Upload Failed!**\n\n🚨 **Error:** `{str(e)}`")
+        raise
