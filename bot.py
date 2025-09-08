@@ -136,18 +136,54 @@ async def start_handler(client: Client, message: Message):
                 
         # Validate the invite link before using
         if not invite_link or not invite_link.startswith('https://t.me/'):
+        if not invite_link or not invite_link.startswith('https://'):
             logger.error(f"Invalid invite link generated: {invite_link}")
             invite_link = "https://t.me/telegram"  # Default fallback
-
         await message.reply_text(
             "🔔 **Please join our channel first to use this bot!**\n\n"
             "After joining, click the 'I've Joined' button below.",
             reply_markup=InlineKeyboardMarkup([
+            # Better fallback - try to construct a basic t.me link
+            channel_ref = str(config.FORCE_SUB_CHANNEL)
+            if channel_ref.startswith('@'):
+                invite_link = f"https://t.me/{channel_ref[1:]}"
+            elif channel_ref.startswith('https://'):
+                invite_link = channel_ref
+            elif channel_ref.startswith('-100'):
+                # For supergroup IDs, try basic format
+                invite_link = f"https://t.me/joinchat/INVITE_LINK_PLACEHOLDER"
+            else:
+                invite_link = "https://t.me/telegram"
+        
+        # Final validation before creating button
+        if not invite_link.startswith('https://'):
+            invite_link = "https://t.me/telegram"
+            logger.warning("Using default telegram link as fallback")
+        # Create keyboard with validated URL
+        try:
+            keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📢 Join Channel", url=invite_link)],
                 [InlineKeyboardButton("🔄 I've Joined", callback_data="check_subscription")]
             ]),
             quote=True
         )
+            ])
+            
+            await message.reply_text(
+                "🔔 **Please join our channel first to use this bot!**\n\n"
+                "After joining, click the 'I've Joined' button below.",
+                reply_markup=keyboard,
+                quote=True
+            )
+        except Exception as e:
+            logger.error(f"Error creating subscribe keyboard: {e}")
+            # Send message without keyboard as ultimate fallback
+            await message.reply_text(
+                "🔔 **Please join our channel first to use this bot!**\n\n"
+                f"Channel: {config.FORCE_SUB_CHANNEL}\n"
+                "Please join the channel and try /start again.",
+                quote=True
+            )
         return
 
     # Now process the start command
