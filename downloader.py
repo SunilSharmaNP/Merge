@@ -1,4 +1,4 @@
-# downloader.py - CLEANED AND OPTIMIZED VERSION
+# downloader.py - Enhanced with Professional Progress Bars and Robust Error Handling
 import aiohttp
 import asyncio
 import os
@@ -7,30 +7,48 @@ import logging
 from datetime import datetime
 from config import config
 from utils import get_human_readable_size, get_progress_bar
+from tenacity import retry, stop_after_attempt, wait_exponential, \
+    retry_if_exception_type, RetryError
 from urllib.parse import urlparse, unquote
 import re
+import requests
+from hashlib import sha256
+import json
 
-logging.basicConfig(level=logging.INFO)
+# Set up logging for better debugging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Global variables for progress throttling
 last_edit_time = {}
-EDIT_THROTTLE_SECONDS = 2.0
+EDIT_THROTTLE_SECONDS = 3.0
 
-# Configuration
-DOWNLOAD_CHUNK_SIZE = 1024 * 1024  # 1MB chunks
-DOWNLOAD_TIMEOUT = 300  # 5 minutes
-MAX_RETRIES = 3
+# Configuration for Downloader
+DOWNLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB chunks
+DOWNLOAD_CONNECT_TIMEOUT = 60
+DOWNLOAD_READ_TIMEOUT = 600
+DOWNLOAD_RETRY_ATTEMPTS = 5
+DOWNLOAD_RETRY_WAIT_MIN = 5
+DOWNLOAD_RETRY_WAIT_MAX = 60
+MAX_URL_LENGTH = 2048
+
+# Gofile.io configuration
+GOFILE_API_URL = "https://api.gofile.io"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+PASSWORD_ERROR_MESSAGE = "ERROR: Password is required for this link\n\nUse: /cmd {link} password"
+
+class DirectDownloadLinkException(Exception):
+    pass
 
 async def smart_progress_editor(status_message, text: str):
-    """Smart progress editor with throttling"""
+    """Smart progress editor with throttling to avoid flood limits."""
     if not status_message or not hasattr(status_message, 'chat'):
         return
-    
+
     message_key = f"{status_message.chat.id}_{status_message.id}"
     now = time.time()
     last_time = last_edit_time.get(message_key, 0)
-    
+
     if (now - last_time) > EDIT_THROTTLE_SECONDS:
         try:
             await status_message.edit_text(text)
@@ -39,24 +57,24 @@ async def smart_progress_editor(status_message, text: str):
             logger.debug(f"Progress update failed: {e}")
 
 def get_time_left(start_time: float, current: int, total: int) -> str:
-    """Calculate estimated time remaining"""
+    """Calculate estimated time remaining."""
     if current <= 0 or total <= 0:
         return "Calculating..."
-    
+
     elapsed = time.time() - start_time
     if elapsed <= 0.1:
         return "Calculating..."
-    
+
     rate = current / elapsed
     if rate == 0:
         return "Calculating..."
-    
+
     remaining_bytes = total - current
     if remaining_bytes <= 0:
         return "0s"
-        
+
     remaining = remaining_bytes / rate
-    
+
     if remaining < 60:
         return f"{int(remaining)}s"
     elif remaining < 3600:
@@ -67,11 +85,11 @@ def get_time_left(start_time: float, current: int, total: int) -> str:
         return f"{hours}h {minutes}m"
 
 def get_speed(start_time: float, current: int) -> str:
-    """Calculate download speed"""
+    """Calculate download speed."""
     elapsed = time.time() - start_time
     if elapsed <= 0:
         return "0 B/s"
-    
+
     speed = current / elapsed
     if speed < 1024:
         return f"{speed:.1f} B/s"
@@ -80,197 +98,204 @@ def get_speed(start_time: float, current: int) -> str:
     else:
         return f"{speed / (1024 * 1024):.1f} MB/s"
 
+def validate_url(url: str) -> tuple[bool, str]:
+    """Validate download URL."""
+    if not url or not isinstance(url, str):
+        return False, "Invalid URL format"
+
+    if len(url) > MAX_URL_LENGTH:
+        return False, f"URL length exceeds maximum allowed ({MAX_URL_LENGTH} characters)."
+
+    parsed_url = urlparse(url)
+    if not all([parsed_url.scheme, parsed_url.netloc]):
+        return False, "URL must have a scheme (http/https) and network location."
+
+    if parsed_url.scheme not in ('http', 'https') and 'gofile.io' not in parsed_url.netloc:
+        return False, "URL scheme must be http or https."
+
+    return True, "Valid"
+
 def get_filename_from_url(url: str, fallback_name: str = None) -> str:
-    """Extract filename from URL"""
+    """Extract filename from URL robustly, with fallbacks and sanitization."""
     try:
         parsed_url = urlparse(url)
         filename = os.path.basename(parsed_url.path)
         filename = unquote(filename)
-        
+
         if '?' in filename:
             filename = filename.split('?')[0]
 
-        # Sanitize filename
         filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
         filename = filename.strip(' .').strip()
-        
-        if not filename or len(filename) < 3:
-            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = fallback_name or f"download_{timestamp_str}.mp4"
-        
-        if not filename.endswith(('.mp4', '.avi', '.mkv', '.mov', '.webm')):
-            filename += '.mp4'
-        
-        return filename
-        
-    except Exception as e:
-        logger.error(f"Error extracting filename: {e}")
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return fallback_name or f"download_{timestamp_str}.mp4"
+        filename = re.sub(r'[\x00-\x1f\x7f]', '', filename)
 
-async def download_from_url(url: str, dest_dir: str, status_message, filename: str = None) -> str:
-    """Download video from URL with progress tracking"""
+        if not filename or len(filename) < 5 or filename.lower() in ('download', 'file', 'index'):
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = fallback_name or f"download_{timestamp_str}.bin"
+            logger.info(f"Generated fallback filename: {filename} for URL: {url}")
+
+        if '.' not in filename:
+            filename += '.bin'
+
+        if len(filename) > 200:
+            name, ext = os.path.splitext(filename)
+            filename = name[:(200 - len(ext))] + ext
+            logger.warning(f"Truncated filename to: {filename}")
+
+        return filename
+    except Exception as e:
+        logger.error(f"Error extracting filename from URL '{url}': {e}")
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return fallback_name or f"download_error_{timestamp_str}.bin"
+
+async def download_from_url(url: str, user_id: int, status_message=None) -> str:
+    """Download file from URL with progress tracking."""
     try:
-        # Ensure destination directory exists
-        os.makedirs(dest_dir, exist_ok=True)
-        
-        # Determine filename
-        if not filename:
-            filename = get_filename_from_url(url)
-        
-        dest_path = os.path.join(dest_dir, filename)
-        
-        # Update status
-        await smart_progress_editor(
-            status_message,
-            f"🔗 **Starting download...**\n\n"
-            f"📁 **File:** `{filename}`\n"
-            f"🌐 **URL:** `{url[:50]}...`"
+        # Validate URL
+        is_valid, error_msg = validate_url(url)
+        if not is_valid:
+            raise ValueError(error_msg)
+
+        # Create user download directory
+        user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
+        os.makedirs(user_download_dir, exist_ok=True)
+
+        # Get filename
+        filename = get_filename_from_url(url)
+        dest_path = os.path.join(user_download_dir, filename)
+
+        if status_message:
+            await smart_progress_editor(status_message, 
+                f"📥 **Starting download...**\n"
+                f"🔗 **URL:** `{url[:50]}...`\n"
+                f"📁 **File:** `{filename}`"
+            )
+
+        # Create aiohttp session
+        timeout = aiohttp.ClientTimeout(
+            connect=DOWNLOAD_CONNECT_TIMEOUT,
+            total=DOWNLOAD_READ_TIMEOUT
         )
-        
-        start_time = time.time()
-        downloaded = 0
-        
-        timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT)
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
+            # Get file size first
+            async with session.head(url) as response:
                 response.raise_for_status()
-                
                 total_size = int(response.headers.get('content-length', 0))
-                
-                # Update with file size info
-                await smart_progress_editor(
-                    status_message,
-                    f"⬇️ **Downloading...**\n\n"
-                    f"📁 **File:** `{filename}`\n"
-                    f"📊 **Size:** `{get_human_readable_size(total_size) if total_size > 0 else 'Unknown'}`\n"
-                    f"🚀 **Starting download...**"
-                )
-                
-                with open(dest_path, 'wb') as file:
-                    async for chunk in response.content.iter_chunked(DOWNLOAD_CHUNK_SIZE):
-                        file.write(chunk)
-                        downloaded += len(chunk)
-                        
-                        if total_size > 0:
-                            progress = downloaded / total_size
-                            speed = get_speed(start_time, downloaded)
-                            eta = get_time_left(start_time, downloaded, total_size)
-                            
-                            progress_text = f"""⬇️ **Downloading Video...**
 
-📁 **File:** `{filename}`
-📊 **Total Size:** `{get_human_readable_size(total_size)}`
+            # Download with progress
+            await _perform_download_request(session, url, dest_path, status_message, total_size)
 
-{get_progress_bar(progress)} `{progress:.1%}`
+        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+            return dest_path
+        else:
+            raise Exception("Download failed: File not created or empty")
 
-📈 **Downloaded:** `{get_human_readable_size(downloaded)}`
-🚀 **Speed:** `{speed}`
-⏱ **ETA:** `{eta}`"""
-                            
-                            await smart_progress_editor(status_message, progress_text)
-        
-        # Verify download
-        if not os.path.exists(dest_path) or os.path.getsize(dest_path) == 0:
-            raise Exception("Download failed - file is empty or doesn't exist")
-        
-        # Final success message
-        elapsed_time = time.time() - start_time
-        final_size = os.path.getsize(dest_path)
-        
-        await smart_progress_editor(
-            status_message,
-            f"✅ **Download Complete!**\n\n"
-            f"📁 **File:** `{filename}`\n"
-            f"📊 **Size:** `{get_human_readable_size(final_size)}`\n"
-            f"⏱ **Time:** `{int(elapsed_time)}s`\n"
-            f"🚀 **Avg Speed:** `{get_speed(start_time, final_size)}`"
-        )
-        
-        return dest_path
-        
     except Exception as e:
         logger.error(f"Download error: {e}")
-        await smart_progress_editor(
-            status_message,
-            f"❌ **Download Failed!**\n\n"
-            f"🚨 **Error:** `{str(e)}`\n\n"
-            f"💡 **Try again or check the URL**"
-        )
-        return None
+        if status_message:
+            await status_message.edit_text(f"❌ **Download failed!**\n\n🚨 **Error:** `{str(e)}`")
+        raise
 
-async def download_from_tg(client, file_id: str, dest_dir: str, status_message, filename: str = None) -> str:
-    """Download video from Telegram with progress tracking"""
+@retry(
+    stop=stop_after_attempt(DOWNLOAD_RETRY_ATTEMPTS),
+    wait=wait_exponential(multiplier=1, min=DOWNLOAD_RETRY_WAIT_MIN, max=DOWNLOAD_RETRY_WAIT_MAX),
+    retry=retry_if_exception_type(aiohttp.ClientError) | retry_if_exception_type(asyncio.TimeoutError),
+    reraise=True
+)
+async def _perform_download_request(session: aiohttp.ClientSession, url: str, dest_path: str, status_message, total_size: int):
+    """Internal function to perform the actual download request with retry logic."""
+    start_time = time.time()
+    last_progress_time = start_time
+    downloaded = 0
+
     try:
-        # Ensure destination directory exists
-        os.makedirs(dest_dir, exist_ok=True)
-        
-        # Get file info
-        file_info = await client.get_file(file_id)
-        
-        if not filename:
-            filename = f"telegram_video_{int(time.time())}.mp4"
-        
-        dest_path = os.path.join(dest_dir, filename)
-        
-        # Update status
-        await smart_progress_editor(
-            status_message,
-            f"📱 **Starting Telegram download...**\n\n"
-            f"📁 **File:** `{filename}`\n"
-            f"📊 **Size:** `{get_human_readable_size(file_info.file_size)}`"
-        )
-        
-        start_time = time.time()
-        
-        # Download with progress callback
-        async def progress_callback(current, total):
-            progress = current / total
-            speed = get_speed(start_time, current)
-            eta = get_time_left(start_time, current, total)
-            
-            progress_text = f"""📱 **Downloading from Telegram...**
+        async with session.get(url) as response:
+            response.raise_for_status()
 
-📁 **File:** `{filename}`
-📊 **Total Size:** `{get_human_readable_size(total)}`
+            if total_size == 0 and 'content-length' in response.headers:
+                total_size = int(response.headers['content-length'])
+                logger.info(f"Content-Length discovered: {total_size} bytes for {os.path.basename(dest_path)}")
 
-{get_progress_bar(progress)} `{progress:.1%}`
+            with open(dest_path, 'wb') as f:
+                async for chunk in response.content.iter_chunked(DOWNLOAD_CHUNK_SIZE):
+                    f.write(chunk)
+                    downloaded += len(chunk)
 
-📈 **Downloaded:** `{get_human_readable_size(current)}`
+                    now = time.time()
+                    if (now - last_progress_time) >= EDIT_THROTTLE_SECONDS or downloaded >= total_size:
+                        last_progress_time = now
+
+                        if total_size > 0:
+                            progress_percent = downloaded / total_size
+                            speed = get_speed(start_time, downloaded)
+                            eta = get_time_left(start_time, downloaded, total_size)
+
+                            progress_text = f"""
+📥 **Downloading from URL...**
+📁 **File:** `{os.path.basename(dest_path)}`
+📊 **Total Size:** `{get_human_readable_size(total_size)}`
+{get_progress_bar(progress_percent)} `{progress_percent:.1%}`
+📈 **Downloaded:** `{get_human_readable_size(downloaded)}`
 🚀 **Speed:** `{speed}`
-⏱ **ETA:** `{eta}`"""
-            
-            await smart_progress_editor(status_message, progress_text)
-        
-        # Download file
-        await client.download_media(file_id, dest_path, progress=progress_callback)
-        
-        # Verify download
-        if not os.path.exists(dest_path) or os.path.getsize(dest_path) == 0:
-            raise Exception("Download failed - file is empty or doesn't exist")
-        
-        # Final success message
-        elapsed_time = time.time() - start_time
-        final_size = os.path.getsize(dest_path)
-        
-        await smart_progress_editor(
-            status_message,
-            f"✅ **Telegram Download Complete!**\n\n"
-            f"📁 **File:** `{filename}`\n"
-            f"📊 **Size:** `{get_human_readable_size(final_size)}`\n"
-            f"⏱ **Time:** `{int(elapsed_time)}s`\n"
-            f"🚀 **Avg Speed:** `{get_speed(start_time, final_size)}`"
-        )
-        
-        return dest_path
-        
+⏱ **ETA:** `{eta}`
+📡 **Status:** {'Complete!' if downloaded >= total_size else 'Downloading...'}
+"""
+                            await smart_progress_editor(status_message, progress_text.strip())
+
+    except Exception as e:
+        logger.error(f"Download request failed: {e}")
+        raise
+
+async def download_from_tg(client, message, user_id: int, status_message=None) -> str:
+    """Download file from Telegram message."""
+    try:
+        # Create user download directory
+        user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
+        os.makedirs(user_download_dir, exist_ok=True)
+
+        # Get file info
+        if message.video:
+            file_obj = message.video
+            file_name = f"video_{int(time.time())}.mp4"
+        elif message.document:
+            file_obj = message.document
+            file_name = file_obj.file_name or f"document_{int(time.time())}"
+        else:
+            raise ValueError("Message doesn't contain a downloadable file")
+
+        dest_path = os.path.join(user_download_dir, file_name)
+
+        if status_message:
+            await smart_progress_editor(status_message,
+                f"📥 **Downloading from Telegram...**\n"
+                f"📁 **File:** `{file_name}`\n"
+                f"📊 **Size:** `{get_human_readable_size(file_obj.file_size)}`"
+            )
+
+        # Download with progress callback
+        def progress_callback(current, total):
+            if status_message:
+                progress_percent = current / total
+                progress_text = f"""
+📥 **Downloading from Telegram...**
+📁 **File:** `{file_name}`
+📊 **Total Size:** `{get_human_readable_size(total)}`
+{get_progress_bar(progress_percent)} `{progress_percent:.1%}`
+📈 **Downloaded:** `{get_human_readable_size(current)}`
+📡 **Status:** {'Complete!' if current >= total else 'Downloading...'}
+"""
+                asyncio.create_task(smart_progress_editor(status_message, progress_text.strip()))
+
+        await client.download_media(message, file_name=dest_path, progress=progress_callback)
+
+        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+            return dest_path
+        else:
+            raise Exception("Download failed: File not created or empty")
+
     except Exception as e:
         logger.error(f"Telegram download error: {e}")
-        await smart_progress_editor(
-            status_message,
-            f"❌ **Telegram Download Failed!**\n\n"
-            f"🚨 **Error:** `{str(e)}`\n\n"
-            f"💡 **Try uploading the file again**"
-        )
-        return None
+        if status_message:
+            await status_message.edit_text(f"❌ **Download failed!**\n\n🚨 **Error:** `{str(e)}`")
+        raise
