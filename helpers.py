@@ -183,28 +183,52 @@ async def verify_user_complete(client: Client, message: Message) -> bool:
 
 def get_main_keyboard():
     """Get main keyboard for start message"""
+    """Get main keyboard for start message with URL validation"""
     keyboard = []
-
     # Row 1: Help and About
-    keyboard.append([
-        InlineKeyboardButton("❓ Help", callback_data="help"),
         InlineKeyboardButton("ℹ️ About", callback_data="about")
     ])
-
     # Row 2: Update Channel and Support Group
+    # Row 2: Update Channel and Support Group (with URL validation)
     row2 = []
+    
+    # Validate UPDATE_CHANNEL URL
     if config.UPDATE_CHANNEL:
         row2.append(InlineKeyboardButton("📢 Updates", url=config.UPDATE_CHANNEL))
+        update_url = str(config.UPDATE_CHANNEL).strip()
+        if update_url.startswith('@'):
+            update_url = f"https://t.me/{update_url[1:]}"
+        elif not update_url.startswith('https://'):
+            update_url = f"https://t.me/{update_url}"
+            
+        # Only add if it's a valid format
+        if update_url.startswith('https://t.me/'):
+            row2.append(InlineKeyboardButton("📢 Updates", url=update_url))
+        else:
+            logger.warning(f"Invalid UPDATE_CHANNEL URL: {config.UPDATE_CHANNEL}")
+    
+    # Validate SUPPORT_GROUP URL
     if config.SUPPORT_GROUP:
         row2.append(InlineKeyboardButton("💬 Support", url=config.SUPPORT_GROUP))
+        support_url = str(config.SUPPORT_GROUP).strip()
+        if support_url.startswith('@'):
+            support_url = f"https://t.me/{support_url[1:]}"
+        elif not support_url.startswith('https://'):
+            support_url = f"https://t.me/{support_url}"
+            
+        # Only add if it's a valid format
+        if support_url.startswith('https://t.me/'):
+            row2.append(InlineKeyboardButton("💬 Support", url=support_url))
+        else:
+            logger.warning(f"Invalid SUPPORT_GROUP URL: {config.SUPPORT_GROUP}")
+    
     if row2:
         keyboard.append(row2)
-
     # Row 3: Developer
+    # Row 3: Developer (callback only, no URL)
     keyboard.append([
         InlineKeyboardButton("👨💻 Developer", callback_data="developer")
     ])
-
     return InlineKeyboardMarkup(keyboard)
 
 def get_video_queue_keyboard(video_count: int):
