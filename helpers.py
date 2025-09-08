@@ -185,7 +185,7 @@ def get_main_keyboard():
     """Get main keyboard for start message"""
     """Get main keyboard for start message with URL validation"""
     keyboard = []
-    # Row 1: Help and About
+    keyboard.append([
         InlineKeyboardButton("ℹ️ About", callback_data="about")
     ])
     # Row 2: Update Channel and Support Group
