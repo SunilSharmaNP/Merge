@@ -164,7 +164,6 @@ async def start_handler(client: Client, message: Message):
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📢 Join Channel", url=invite_link)],
                 [InlineKeyboardButton("🔄 I've Joined", callback_data="check_subscription")]
-            ]),
             quote=True
         )
             ])
